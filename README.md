@@ -1,8 +1,35 @@
-# Threelane
+<p align="center">
+  <img src="public/favicon.svg" alt="Threelane" width="128" height="128" />
+</p>
 
-Local screen + multi-cam recorder and reels/shorts editor for macOS.
+<h1 align="center">Threelane</h1>
+
+<p align="center">
+  Local screen + multi-cam recorder and reels/shorts editor for macOS.
+</p>
+
+<p align="center">
+  <a href="https://threeline.myfractionalcto.com">Website</a> &nbsp;·&nbsp;
+  <a href="../../releases/latest">Download</a> &nbsp;·&nbsp;
+  <a href="https://myfractionalcto.slack.com">Slack</a> &nbsp;·&nbsp;
+  <a href="PLAN.md">Architecture</a>
+</p>
+
+---
 
 > **Status:** milestone 1 — app shell only. No recording or editing logic yet.
+
+## About
+
+Threelane is a Mac app that captures your screen, webcam, and a phone-as-camera
+simultaneously over the same WiFi network, then edits the tracks into
+portrait or landscape reels with per-scene layouts and exports to MP4.
+
+Everything runs locally on your laptop. Nothing is uploaded. The mobile
+companion is an installable PWA served by the laptop, so there's no app
+store install on the phone either.
+
+More on the [website](https://threeline.myfractionalcto.com).
 
 ## Install
 
@@ -28,6 +55,13 @@ Then launch Threelane normally. Alternatively, right-click Threelane.app
 in Applications → **Open**, then click **Open** in the dialog
 (double-clicking won't show the override button).
 
+## Community
+
+Questions, feedback, bug reports? Join the Slack:
+[myfractionalcto.slack.com](https://myfractionalcto.slack.com)
+
+Or open an issue on this repo.
+
 ## Develop
 
 ```bash
@@ -41,19 +75,8 @@ npm run dev      # starts Vite + Electron with hot reload
 npm run dist     # writes release/Threelane-<version>-<arch>.dmg
 ```
 
-### Opening the unsigned .dmg on another Mac
-
-Because we don't code-sign yet, macOS Gatekeeper will refuse to open the app
-on first launch:
-
-1. Open the `.dmg` and drag `Threelane.app` to `Applications`.
-2. In Finder, **right-click → Open**, then click **Open** in the dialog.
-   (Double-clicking will only show "can't be opened" and won't expose the
-   override button.)
-3. After the first launch, it opens normally like any other app.
-
-We'll add real code signing when you have an Apple Developer account —
-it's a flag-flip in `electron-builder.yml`.
+We'll add real code signing when there's an Apple Developer account on
+the project — it's a flag-flip in `electron-builder.yml`.
 
 ## Layout
 
