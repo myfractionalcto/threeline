@@ -6,7 +6,7 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "dev:web": "SNAPSCREEN_WEB_ONLY=1 vite",
+    "dev:web": "THREELANE_WEB_ONLY=1 vite",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "build": "npm run typecheck && vite build",
     "dist": "npm run build && electron-builder --mac -c electron-builder.yml"

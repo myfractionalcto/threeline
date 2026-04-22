@@ -4,9 +4,12 @@ import electron from 'vite-plugin-electron/simple';
 import { builtinModules } from 'node:module';
 import path from 'node:path';
 
-// Set SNAPSCREEN_WEB_ONLY=1 to run the renderer in a plain browser (no Electron).
+// Set THREELANE_WEB_ONLY=1 to run the renderer in a plain browser (no Electron).
 // Useful for iterating on the recorder/editor UI before packaging.
-const webOnly = process.env.SNAPSCREEN_WEB_ONLY === '1';
+// (SNAPSCREEN_WEB_ONLY is still honoured for a grace period so existing
+// shells/scripts don't break after the rename.)
+const webOnly =
+  process.env.THREELANE_WEB_ONLY === '1' || process.env.SNAPSCREEN_WEB_ONLY === '1';
 
 // Anything in node_modules should be loaded by Node at runtime — never
 // bundled into main.js. This avoids rollup tripping on optional native

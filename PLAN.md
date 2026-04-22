@@ -1,4 +1,4 @@
-# SnapScreen — Plan
+# Threelane — Plan
 
 A locally-hosted Electron app for Mac that records screen + webcam + a mobile
 companion camera simultaneously over the same WiFi network, then edits the
@@ -43,7 +43,7 @@ must stay separable.
 Per recording session you get, on disk:
 
 ```
-~/Movies/SnapScreen/<project-id>/
+~/Movies/Threelane/<project-id>/
   screen.webm           # laptop screen (video only)
   laptop-cam.webm       # laptop webcam (video+audio, or video only)
   laptop-mic.webm       # laptop mic (if recorded separately)
@@ -267,7 +267,7 @@ Multi-cam layouts source from: `laptop-screen`, `laptop-cam`, `mobile-cam`.
 1. **Scaffold** — Electron + Vite + React + Tailwind; "hello" window packaged
    as a dmg.
 2. **Laptop screen + cam recorder** — single-user, two tracks, writes to
-   `~/Movies/SnapScreen/<project>/`. No editor yet — just file output.
+   `~/Movies/Threelane/<project>/`. No editor yet — just file output.
 3. **Minimal editor v0** — load a project, scrub, manual cut, pick layout,
    export to mp4 via ffmpeg. Proves the end-to-end loop.
 4. **Mobile companion** — companion server, QR flow, time sync, upload,
