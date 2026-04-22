@@ -12,6 +12,7 @@
   <a href="https://threeline.myfractionalcto.com">Website</a> &nbsp;·&nbsp;
   <a href="../../releases/latest">Download</a> &nbsp;·&nbsp;
   <a href="https://myfractionalcto.slack.com">Slack</a> &nbsp;·&nbsp;
+  <a href="CONTRIBUTING.md">Contributing</a> &nbsp;·&nbsp;
   <a href="PLAN.md">Architecture</a>
 </p>
 
