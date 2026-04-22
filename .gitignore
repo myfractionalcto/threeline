@@ -32,3 +32,6 @@ pnpm-debug.log*
 
 # Local assistant/tool folders
 .claude/
+
+# Personal notes — anything suffixed .local.md is private to the maintainer
+*.local.md
