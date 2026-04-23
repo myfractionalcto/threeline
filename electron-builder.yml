@@ -39,3 +39,23 @@ mac:
 dmg:
   title: Threelane ${version}
   writeUpdateInfo: false
+# Windows target. NSIS installer is the default for electron-builder —
+# produces a single .exe that drops the app into the user's AppData and
+# adds a Start-menu shortcut. x64 only for now; arm64 Windows is rare
+# and ffmpeg-static doesn't have a reliable win-arm64 binary yet.
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # Unsigned for now. SmartScreen will warn on first launch until we
+  # have an EV code-signing cert — users click "More info → Run anyway".
+nsis:
+  # One-click = false gives the user a normal installer UI with a dir
+  # picker. Saves support pings asking "where did it install?"
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  # Leave a Start-menu shortcut so Threelane is findable post-install.
+  createStartMenuShortcut: true
+  createDesktopShortcut: true

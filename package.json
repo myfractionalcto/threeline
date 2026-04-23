@@ -9,7 +9,9 @@
     "dev:web": "THREELANE_WEB_ONLY=1 vite",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "build": "npm run typecheck && vite build",
-    "dist": "npm run build && electron-builder --mac -c electron-builder.yml"
+    "dist": "npm run build && electron-builder -c electron-builder.yml",
+    "dist:mac": "npm run build && electron-builder --mac -c electron-builder.yml",
+    "dist:win": "npm run build && electron-builder --win -c electron-builder.yml"
   },
   "engines": {
     "node": ">=20"

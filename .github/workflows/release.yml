@@ -1,0 +1,107 @@
+# Cross-platform release builds.
+#
+# Triggered by pushing a tag of the form `v*` (e.g. `v0.1.0`). Builds
+# the macOS (.dmg, arm64 + x64) and Windows (.exe, x64) installers on
+# GitHub-hosted runners, then aggregates the artifacts into a DRAFT
+# GitHub Release. The release stays in draft so you can verify each
+# installer works before publishing — one click on the Releases page.
+#
+# `workflow_dispatch` is also enabled so you can smoke-test the pipeline
+# on demand without tagging. That path skips the release-creation step;
+# installers are available as downloadable artifacts on the run page.
+#
+# No code signing yet on either platform:
+#   - macOS: ad-hoc signed (identity: '-' in electron-builder.yml).
+#     Users need to right-click → Open the first time, but TCC remembers
+#     camera/mic consent thanks to the stable ad-hoc identity.
+#   - Windows: unsigned. SmartScreen shows "Unrecognized app" until the
+#     first few hundred installs build reputation, or we buy an EV cert.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    strategy:
+      # Don't cancel a mac build just because windows failed (or vice
+      # versa) — we want to know whether each platform is healthy.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform: mac
+          - os: windows-latest
+            platform: win
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # npm ci enforces package-lock.json; any drift between lockfile
+      # and package.json fails the build, which is what we want for a
+      # release. It also skips devDeps' optional prebuilds where possible.
+      - run: npm ci
+
+      - name: Vite + tsc build
+        run: npm run build
+
+      - name: electron-builder (${{ matrix.platform }})
+        shell: bash
+        run: npx electron-builder --${{ matrix.platform }} -c electron-builder.yml
+        env:
+          # electron-builder reads GH_TOKEN to decide whether to publish.
+          # We don't auto-publish from here (the release job uploads via
+          # softprops instead) — passing the token just quiets the
+          # "no token found" warning.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.platform }}
+          # Include .yml + .blockmap so the artifact set is ready for
+          # electron-updater later — they're a few KB each and trivial
+          # to produce now, painful to regenerate for a past release.
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+
+  release:
+    # Only fire when the workflow was kicked off by a tag push. Manual
+    # workflow_dispatch runs stop at the build step — artifacts are
+    # available on the run page for smoke-testing.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Flatten each platform's artifact directory into the release.
+          files: artifacts/**/*
+          # Let GitHub auto-compose changelog from merged PRs since the
+          # previous tag. We can edit it before publishing.
+          generate_release_notes: true
+          # DRAFT: reviewer has to click "Publish" after sanity-checking
+          # that each installer boots. Avoids accidental public releases
+          # while the pipeline is young.
+          draft: true
