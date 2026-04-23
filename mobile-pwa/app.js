@@ -19,6 +19,7 @@ const msgEl = document.querySelector('#msg');
 const hintEl = document.querySelector('#hint');
 const recPill = document.querySelector('#rec-pill');
 const recTimer = document.querySelector('#rec-timer');
+const flipBtn = document.querySelector('#flip-cam');
 const uploadRow = document.querySelector('#upload-row');
 const progressBar = document.querySelector('#progress-bar');
 const uploadLabel = document.querySelector('#upload-label');
@@ -56,6 +57,12 @@ let ws = null;
 let deviceId = null;
 let clockOffsetMs = 0; // serverTime - clientTime
 let mediaStream = null;
+/** Which physical camera the current mediaStream is drawing from.
+ *  Toggled by the flip button. 'user' = front / selfie, 'environment'
+ *  = back / rear. The getUserMedia constraint uses `ideal:` so devices
+ *  with only one camera (rare on modern phones) still return *a*
+ *  camera instead of erroring. */
+let currentFacing = 'user';
 let mediaRecorder = null;
 let recordedChunks = [];
 let recMime = '';
@@ -507,22 +514,35 @@ function singlePingRound() {
   });
 }
 
+/**
+ * Ask the browser for a camera+mic stream pointed at the chosen facing
+ * direction. Factored out so both the initial grant and the flip-camera
+ * button share identical constraints — only `facingMode` changes. Uses
+ * `ideal:` rather than `exact:` so phones with only one physical camera
+ * still hand us something back.
+ */
+async function acquireStream(facing) {
+  return await navigator.mediaDevices.getUserMedia({
+    video: {
+      facingMode: { ideal: facing },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    },
+    audio: true,
+  });
+}
+
 async function requestMedia() {
   grantBtn.disabled = true;
   msgEl.textContent = 'Requesting camera & microphone…';
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: 'user' },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-      },
-      audio: true,
-    });
+    mediaStream = await acquireStream(currentFacing);
     previewEl.srcObject = mediaStream;
     grantBtn.classList.add('hidden');
     msgEl.classList.add('hidden');
     hintEl.classList.remove('hidden');
+    // Flip button only makes sense once we actually have a feed to flip.
+    flipBtn.classList.remove('hidden');
     setStatus('Ready', 'connected');
     sendWs({ type: 'ready' });
     // Laptop may have requested the live feed before the user granted
@@ -535,6 +555,65 @@ async function requestMedia() {
     msgEl.textContent =
       'Permission denied. Allow camera and microphone in Safari/Chrome settings.';
   }
+}
+
+/**
+ * Swap the active camera between front ('user') and back ('environment').
+ * Re-acquires a fresh MediaStream for the new facing direction and plugs
+ * it into (a) the on-phone <video> preview, and (b) any live WebRTC
+ * preview sender feeding the laptop — in the latter case using
+ * `RTCRtpSender.replaceTrack` so the peer connection stays up without
+ * renegotiation.
+ *
+ * Disabled while recording: MediaRecorder was constructed around the
+ * original track set and can't pick up a swapped track mid-clip without
+ * producing a corrupt output.
+ */
+async function flipCamera() {
+  if (!mediaStream) return;
+  if (mediaRecorder) {
+    showMsg("Can't flip while recording — stop first.");
+    return;
+  }
+  const target = currentFacing === 'user' ? 'environment' : 'user';
+  flipBtn.disabled = true;
+  let next;
+  try {
+    next = await acquireStream(target);
+  } catch (e) {
+    // Phone doesn't have the other camera, or user revoked permission —
+    // keep the existing stream running and surface the error briefly.
+    flipBtn.disabled = false;
+    showMsg(`Couldn't switch camera: ${e.message ?? e}`);
+    return;
+  }
+  // Stop old tracks before assigning — otherwise both cameras stay
+  // open on some Android devices and the indicator light lingers.
+  try {
+    mediaStream.getTracks().forEach((t) => t.stop());
+  } catch {}
+  mediaStream = next;
+  currentFacing = target;
+  previewEl.srcObject = mediaStream;
+
+  // If the laptop is currently watching a live feed, swap the outgoing
+  // track in place. replaceTrack doesn't renegotiate the session — the
+  // laptop's <video> just starts showing the new camera on its next
+  // frame.
+  if (previewPc) {
+    const [newVideo] = mediaStream.getVideoTracks();
+    const sender = previewPc
+      .getSenders()
+      .find((s) => s.track && s.track.kind === 'video');
+    if (sender && newVideo) {
+      try {
+        await sender.replaceTrack(newVideo);
+      } catch (e) {
+        console.warn('replaceTrack failed', e);
+      }
+    }
+  }
+  flipBtn.disabled = false;
 }
 
 async function handleStart(msg) {
@@ -563,6 +642,9 @@ async function handleStart(msg) {
   recStartedLocalMs = Date.now();
   recTimer.textContent = '00:00';
   recPill.classList.remove('hidden');
+  // Lock the flip button while recording — MediaRecorder is welded to
+  // the original track set. Re-enabled in handleStop.
+  flipBtn.disabled = true;
   setStatus('Recording', 'recording');
   sendWs({ type: 'recording-started' });
   recTimerInterval = setInterval(() => {
@@ -582,6 +664,8 @@ async function handleStop() {
     rec.stop();
   });
   recPill.classList.add('hidden');
+  // Recording done — re-enable camera flip.
+  flipBtn.disabled = false;
   setStatus('Uploading', 'connected');
 
   const blob = new Blob(recordedChunks, { type: recMime || 'video/webm' });
@@ -628,6 +712,10 @@ function uploadBlob(blob, durationMs) {
 
 grantBtn.addEventListener('click', () => {
   requestMedia();
+});
+
+flipBtn.addEventListener('click', () => {
+  flipCamera().catch((e) => console.warn('flipCamera failed', e));
 });
 
 // ---------- Reconnect UI wiring ----------
