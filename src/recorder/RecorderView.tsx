@@ -219,10 +219,11 @@ export function RecorderView({ onExit, onOpenInEditor }: Props) {
       s ? new MediaStream(s.getTracks()) : null;
     await session.start({
       screenStream: clone(screenStream),
+      screenSourceId: screenStream ? screenId || null : null,
       camStream: camEnabled ? clone(camStream) : null,
       micStream: clone(micStream),
     });
-  }, [session, screenStream, camStream, micStream, camEnabled]);
+  }, [session, screenStream, screenId, camStream, micStream, camEnabled]);
 
   const start = useCallback(() => {
     if (countdown !== null) {

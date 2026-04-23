@@ -137,6 +137,20 @@ export interface ExportSourceTransform {
   offsetY: number;
 }
 
+export interface ExportZoomClip {
+  start: number;
+  end: number;
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+  followCursor: boolean;
+}
+
+export interface ExportTrimClip {
+  start: number;
+  end: number;
+}
+
 export interface ExportRequest {
   projectId: string;
   /** Human-readable project name. Used to seed the save dialog's default filename. */
@@ -159,6 +173,13 @@ export interface ExportRequest {
     audioSource: string | null;
     screenTransform: ExportSourceTransform;
     camTransform: ExportSourceTransform;
+    /** Baseline scene-level cursor-follow. */
+    followCursor: boolean;
+    /** Time-ordered, non-overlapping zoom effect clips. */
+    zoomClips: ExportZoomClip[];
+    /** Time-ordered, non-overlapping cut ranges the exporter must omit
+     *  from the final output. Reduces the scene's effective duration. */
+    trimClips: ExportTrimClip[];
   }[];
   /** The tracks used — includes the source file path (Electron) or URL (web). */
   tracks: {
@@ -170,6 +191,12 @@ export interface ExportRequest {
     url?: string;
   }[];
   orientation: 'portrait' | 'landscape' | 'square';
+  /** Cursor samples in screen-track-local ms. Used by the exporter to
+   *  compute per-segment follow-cursor offsets. */
+  cursorTrack?: {
+    samples: { t: number; x: number; y: number }[];
+    display: { width: number; height: number };
+  };
 }
 
 export type ExportResult =
@@ -222,7 +249,11 @@ export interface Platform {
    * Electron polls at ~30 Hz and writes cursor.jsonl into the project folder.
    * Web is a no-op — browsers can't see the cursor outside the tab.
    */
-  startCursorTracking(projectId: string, startedAtMs: number): Promise<string | null>;
+  startCursorTracking(
+    projectId: string,
+    startedAtMs: number,
+    screenSourceId: string | null,
+  ): Promise<string | null>;
 
   /** Flush and close cursor.jsonl. Returns the filename (relative) or null. */
   stopCursorTracking(projectId: string): Promise<string | null>;

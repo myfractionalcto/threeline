@@ -106,6 +106,26 @@ export function EditorView({ projectId, onExit }: Props) {
     editor.splitAt(playback.playheadMs);
   }, [editor, playback.playheadMs]);
 
+  /**
+   * Keyboard-driven removal. Priority: selected trim clip → selected
+   * zoom clip → selected scene. Trim and zoom selections are mutually
+   * exclusive in state, so the order only matters when neither is set
+   * and we fall through to scene delete (pre-Phase-2 behavior).
+   */
+  const handleDeleteSelection = useCallback(() => {
+    if (editor.selectedTrimClip && editor.selectedSceneId) {
+      editor.removeTrimClip(editor.selectedSceneId, editor.selectedTrimClip.id);
+      return;
+    }
+    if (editor.selectedZoomClip && editor.selectedSceneId) {
+      editor.removeZoomClip(editor.selectedSceneId, editor.selectedZoomClip.id);
+      return;
+    }
+    if (editor.selectedSceneId) {
+      editor.deleteScene(editor.selectedSceneId);
+    }
+  }, [editor]);
+
   // Keyboard shortcuts:
   //   Space                → play/pause
   //   Shift + ←/→          → seek ±1s
@@ -149,10 +169,26 @@ export function EditorView({ projectId, onExit }: Props) {
         playback.seek(playback.playheadMs + dir * stepMs);
         return;
       }
+      // Escape: clear zoom- or trim-clip selection so the Inspector
+      // falls back to scene-level properties. Cheap to always run —
+      // no-ops when nothing is selected.
+      if (e.key === 'Escape' && !mod && !e.shiftKey && !e.altKey) {
+        editor.clearZoomClipSelection();
+        editor.clearTrimClipSelection();
+        return;
+      }
+      // Delete/Backspace: remove the active selection (clip first, then
+      // scene). Only when no modifiers so ⌘Backspace in a text field is
+      // unaffected, and we already bailed above on text targets anyway.
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !mod && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        handleDeleteSelection();
+        return;
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [playback, splitAtPlayhead]);
+  }, [editor, handleDeleteSelection, playback, splitAtPlayhead]);
 
   const startExport = useCallback(async () => {
     if (!editor.project) return;
@@ -294,6 +330,7 @@ export function EditorView({ projectId, onExit }: Props) {
         <Inspector
           project={editor.project}
           scene={inspectorScene ?? null}
+          selectedZoomClip={editor.selectedZoomClip}
           onLayoutChange={(l) => inspectorScene && editor.setSceneLayout(inspectorScene.id, l)}
           onAudioSourceChange={(a) =>
             inspectorScene && editor.setSceneAudioSource(inspectorScene.id, a)
@@ -311,6 +348,18 @@ export function EditorView({ projectId, onExit }: Props) {
           onTransformReset={(role) =>
             inspectorScene && editor.resetSceneTransform(inspectorScene.id, role)
           }
+          onShowCursorOverlayChange={editor.setShowCursorOverlay}
+          onSceneFollowCursorChange={(follow) => {
+            if (inspectorScene)
+              editor.setSceneFollowCursor(inspectorScene.id, follow);
+          }}
+          onUpdateZoomClip={(clipId, patch) => {
+            if (inspectorScene) editor.updateZoomClip(inspectorScene.id, clipId, patch);
+          }}
+          onRemoveZoomClip={(clipId) => {
+            if (inspectorScene) editor.removeZoomClip(inspectorScene.id, clipId);
+          }}
+          onClearZoomClipSelection={editor.clearZoomClipSelection}
         />
       </div>
 
@@ -319,9 +368,19 @@ export function EditorView({ projectId, onExit }: Props) {
         playheadMs={playback.playheadMs}
         playing={playback.playing}
         selectedSceneId={editor.selectedSceneId}
+        selectedZoomClipId={editor.selectedZoomClipId}
+        selectedTrimClipId={editor.selectedTrimClipId}
         onSeek={playback.seek}
         onTogglePlay={playback.toggle}
         onSelectScene={editor.setSelectedSceneId}
+        onSelectZoomClip={editor.selectZoomClip}
+        onClearZoomClipSelection={editor.clearZoomClipSelection}
+        onSelectTrimClip={editor.selectTrimClip}
+        onClearTrimClipSelection={editor.clearTrimClipSelection}
+        onUpdateZoomClip={editor.updateZoomClip}
+        onUpdateTrimClip={editor.updateTrimClip}
+        onAddZoomClip={editor.addZoomClip}
+        onAddTrimClip={editor.addTrimClip}
         onSplitAtPlayhead={splitAtPlayhead}
         onDeleteScene={editor.deleteScene}
       />
@@ -445,11 +504,17 @@ function buildProject(loaded: {
         audioSource: audio,
         screenTransform,
         camTransform: { ...DEFAULT_CAM_TRANSFORM },
+        // Default on when we have cursor data — most users want follow in
+        // cropped layouts without having to find the toggle.
+        followCursor: !!loaded.cursorTrack,
+        zoomClips: [],
+        trimClips: [],
       },
     ],
     sessionStartMs,
     totalDurationMs,
     cursorTrack: loaded.cursorTrack,
+    showCursorOverlay: false,
   };
 }
 
@@ -469,7 +534,7 @@ function initialScreenTransform(
   // portrait-canvas, which is what we optimize for.
   if (!screen) return { ...DEFAULT_TRANSFORM };
   // Portrait canvas + the common landscape screen recording → cover.
-  if (canvasAr < 1) return { fit: 'cover', zoom: 1, offsetX: 0, offsetY: 0, followCursor: false };
+  if (canvasAr < 1) return { fit: 'cover', zoom: 1, offsetX: 0, offsetY: 0 };
   return { ...DEFAULT_TRANSFORM };
 }
 
@@ -508,6 +573,22 @@ function buildExportRequest(p: EditorProject) {
       audioSource: s.audioSource,
       screenTransform: s.screenTransform,
       camTransform: s.camTransform,
+      followCursor: s.followCursor,
+      // Drop fields ffmpeg doesn't need (id) and sort by time so the
+      // exporter can trust the order when segmenting.
+      zoomClips: [...s.zoomClips]
+        .sort((a, b) => a.start - b.start)
+        .map((c) => ({
+          start: c.start,
+          end: c.end,
+          zoom: c.zoom,
+          offsetX: c.offsetX,
+          offsetY: c.offsetY,
+          followCursor: c.followCursor,
+        })),
+      trimClips: [...s.trimClips]
+        .sort((a, b) => a.start - b.start)
+        .map((c) => ({ start: c.start, end: c.end })),
     })),
     tracks: p.tracks.map((t) => ({
       id: t.id,
@@ -516,5 +597,11 @@ function buildExportRequest(p: EditorProject) {
       filePath: t.url, // Electron main rewrites this to an absolute path.
       url: t.url,
     })),
+    cursorTrack: p.cursorTrack
+      ? {
+          samples: p.cursorTrack.samples,
+          display: p.cursorTrack.display,
+        }
+      : undefined,
   };
 }

@@ -47,6 +47,16 @@
   * {
     @apply border-border;
   }
+  /* Lock the app to the viewport. Without this the body can scroll past
+     a 100vh `<main>` on tall pages (e.g. during HMR, or when React
+     briefly mounts a fallback), which manifests as an "extra margin
+     below the timeline" bug. */
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
   body {
     @apply bg-background text-foreground;
     font-family:

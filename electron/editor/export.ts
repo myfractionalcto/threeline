@@ -24,6 +24,20 @@ export interface ExportSourceTransform {
   offsetY: number;
 }
 
+export interface ExportZoomClip {
+  start: number;
+  end: number;
+  zoom: number;
+  offsetX: number;
+  offsetY: number;
+  followCursor: boolean;
+}
+
+export interface ExportTrimClip {
+  start: number;
+  end: number;
+}
+
 export interface ExportRequest {
   projectId: string;
   projectName?: string;
@@ -47,6 +61,15 @@ export interface ExportRequest {
     audioSource: string | null;
     screenTransform: ExportSourceTransform;
     camTransform: ExportSourceTransform;
+    /** Baseline cursor-follow for the scene (applied outside zoom clips). */
+    followCursor: boolean;
+    /** Ordered non-overlapping zoom effect clips. Non-intersecting gaps
+     *  fall back to the scene baseline. */
+    zoomClips: ExportZoomClip[];
+    /** Cut ranges the exporter must omit from the output. Applied by
+     *  splitting the scene into surviving sub-scenes before rendering —
+     *  see `splitSceneByTrims`. */
+    trimClips: ExportTrimClip[];
   }[];
   tracks: {
     id: string;
@@ -55,6 +78,13 @@ export interface ExportRequest {
     filePath?: string;
   }[];
   orientation: 'portrait' | 'landscape' | 'square';
+  /** Recorded cursor samples (ms are screen-track local, not output). The
+   *  exporter uses these for follow-cursor segmentation. Absent → follow
+   *  falls back to the static offset on the clip/scene. */
+  cursorTrack?: {
+    samples: { t: number; x: number; y: number }[];
+    display: { width: number; height: number };
+  };
 }
 
 /**
@@ -72,7 +102,7 @@ export interface ExportRequest {
  * need an explicit crop step.
  */
 function transformedSource(
-  inputIdx: number,
+  inputLabel: string,
   targetW: number,
   targetH: number,
   t: ExportSourceTransform,
@@ -96,12 +126,277 @@ function transformedSource(
   // clipping.
   const chain =
     `color=c=black:s=${targetW}x${targetH}:d=${durationSec.toFixed(3)}[${bg}];` +
-    `[${inputIdx}:v]scale=${zW}:${zH}:${fitFlag}[${sc}];` +
+    `[${inputLabel}]scale=${zW}:${zH}:${fitFlag}[${sc}];` +
     `[${bg}][${sc}]overlay=` +
     `x=(${targetW}-w)/2+(${offX})*${targetW}:` +
     `y=(${targetH}-h)/2+(${offY})*${targetH}` +
     `[${fr}]`;
   return { chain, outLabel: `[${fr}]` };
+}
+
+/**
+ * Cursor-follow math ported from `src/editor/cursorFollow.ts` — kept in
+ * sync manually so the exporter doesn't have to import renderer code.
+ * Computes the `offsetX`/`offsetY` that centers the zoomed view on the
+ * cursor, clamped so the viewport stays inside the source.
+ */
+function followOffset(
+  cursor: { x: number; y: number },
+  source: { width: number; height: number },
+  target: { width: number; height: number },
+  transform: ExportSourceTransform,
+): { offsetX: number; offsetY: number } {
+  if (source.width === 0 || source.height === 0) {
+    return { offsetX: 0, offsetY: 0 };
+  }
+  const fitScale =
+    transform.fit === 'cover'
+      ? Math.max(target.width / source.width, target.height / source.height)
+      : Math.min(target.width / source.width, target.height / source.height);
+  const scale = fitScale * transform.zoom;
+  const scaledW = source.width * scale;
+  const scaledH = source.height * scale;
+  const desiredX = (scale * (source.width / 2 - cursor.x)) / target.width;
+  const desiredY = (scale * (source.height / 2 - cursor.y)) / target.height;
+  const maxX = Math.max(0, (scaledW - target.width) / (2 * target.width));
+  const maxY = Math.max(0, (scaledH - target.height) / (2 * target.height));
+  return {
+    offsetX: Math.max(-maxX, Math.min(maxX, desiredX)),
+    offsetY: Math.max(-maxY, Math.min(maxY, desiredY)),
+  };
+}
+
+/**
+ * Binary-search a cursor sample list for time `ms` and linearly interpolate.
+ * Mirrors `cursorAt` in the renderer.
+ */
+function cursorAtMs(
+  samples: { t: number; x: number; y: number }[],
+  ms: number,
+): { x: number; y: number } | null {
+  if (samples.length === 0) return null;
+  if (ms <= samples[0].t) return { x: samples[0].x, y: samples[0].y };
+  const last = samples[samples.length - 1];
+  if (ms >= last.t) return { x: last.x, y: last.y };
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >>> 1;
+    if (samples[mid].t <= ms) lo = mid;
+    else hi = mid - 1;
+  }
+  const a = samples[lo];
+  const b = samples[Math.min(lo + 1, samples.length - 1)];
+  if (b.t === a.t) return { x: a.x, y: a.y };
+  const f = (ms - a.t) / (b.t - a.t);
+  return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f };
+}
+
+/**
+ * Sampling rate for follow-cursor segmentation. Each sample becomes one
+ * ffmpeg segment with a constant offset. 5 Hz keeps the filter graph
+ * manageable (≤150 segments for a 30 s scene) while still reading as
+ * continuous panning at export time — below that the cursor visibly
+ * jumps in blocks.
+ */
+const FOLLOW_SAMPLE_MS = 200;
+
+/** Temporal smoothing factor — matches the preview's 0.25 exponential
+ *  smoothing so previewed and exported follow paths look the same. */
+const FOLLOW_SMOOTH_ALPHA = 0.25;
+
+/**
+ * One piece of the scene's screen stream with a constant transform. Times
+ * are scene-relative (ms from scene.start).
+ */
+interface ScreenSegment {
+  startMs: number;
+  endMs: number;
+  transform: ExportSourceTransform;
+}
+
+/**
+ * Break a scene up into screen-transform segments honoring zoom clips and
+ * cursor-follow. Algorithm:
+ *
+ *   1. Walk the scene's timeline inserting zoom-clip boundaries as cuts
+ *      (everything outside clips uses scene.screenTransform).
+ *   2. For each resulting block, if follow-cursor is on and we have
+ *      cursor samples, sub-sample the block at FOLLOW_SAMPLE_MS ticks
+ *      and emit one segment per tick with the computed offset. Otherwise
+ *      emit a single block with the block's static transform.
+ *
+ * The preview reads the video element's natural size for source dims; we
+ * don't have that at export time without an ffprobe pass. Assume the
+ * cursor track's display.width/height are a good proxy — screens recorded
+ * via desktopCapturer match the display's backing resolution up to
+ * rounding.
+ */
+function planScreenSegments(
+  scene: ExportRequest['scenes'][number],
+  canvas: { width: number; height: number },
+  cursorTrack: ExportRequest['cursorTrack'] | undefined,
+  screenOffsetMs: number,
+  /** W/H of the screen-transform's target rect — canvas-sized in
+   *  screen-only layouts, half-canvas in split, etc. Clamp math differs
+   *  per layout, so the caller supplies it. */
+  targetW: number,
+  targetH: number,
+): ScreenSegment[] {
+  const durMs = scene.end - scene.start;
+  const clipsSorted = [...scene.zoomClips].sort((a, b) => a.start - b.start);
+
+  // Build a "blocks" list — contiguous runs with a single base transform
+  // plus a flag for whether cursor-follow is on.
+  interface Block {
+    startMs: number; // scene-relative
+    endMs: number;
+    base: ExportSourceTransform;
+    follow: boolean;
+  }
+  const blocks: Block[] = [];
+  let cursor = 0;
+  for (const clip of clipsSorted) {
+    const clipStart = Math.max(0, clip.start - scene.start);
+    const clipEnd = Math.min(durMs, clip.end - scene.start);
+    if (clipEnd <= cursor) continue;
+    if (clipStart > cursor) {
+      // Scene baseline block before this clip.
+      blocks.push({
+        startMs: cursor,
+        endMs: clipStart,
+        base: scene.screenTransform,
+        follow: scene.followCursor,
+      });
+    }
+    blocks.push({
+      startMs: Math.max(cursor, clipStart),
+      endMs: clipEnd,
+      base: {
+        ...scene.screenTransform,
+        zoom: clip.zoom,
+        offsetX: clip.offsetX,
+        offsetY: clip.offsetY,
+      },
+      follow: clip.followCursor,
+    });
+    cursor = clipEnd;
+  }
+  if (cursor < durMs) {
+    blocks.push({
+      startMs: cursor,
+      endMs: durMs,
+      base: scene.screenTransform,
+      follow: scene.followCursor,
+    });
+  }
+
+  // Expand each block into segments. Static blocks collapse to one
+  // segment. Follow blocks are sampled at FOLLOW_SAMPLE_MS.
+  const segments: ScreenSegment[] = [];
+  const srcDim = cursorTrack?.display ?? { width: canvas.width, height: canvas.height };
+  for (const block of blocks) {
+    const wantsFollow =
+      block.follow && cursorTrack && cursorTrack.samples.length > 0;
+    if (!wantsFollow) {
+      segments.push({
+        startMs: block.startMs,
+        endMs: block.endMs,
+        transform: { ...block.base },
+      });
+      continue;
+    }
+    // Sample cursor at regular intervals and emit micro-segments. Smooth
+    // across samples the same way the preview does.
+    let smoothedX = 0;
+    let smoothedY = 0;
+    let seeded = false;
+    for (let t = block.startMs; t < block.endMs; t += FOLLOW_SAMPLE_MS) {
+      const segEnd = Math.min(block.endMs, t + FOLLOW_SAMPLE_MS);
+      // Map scene-relative → screen-track local time for cursor lookup.
+      const trackMs = scene.start + t - screenOffsetMs;
+      const raw = cursorAtMs(cursorTrack.samples, trackMs);
+      let offsetX = block.base.offsetX;
+      let offsetY = block.base.offsetY;
+      if (raw) {
+        const target = followOffset(
+          raw,
+          srcDim,
+          { width: targetW, height: targetH },
+          block.base,
+        );
+        if (!seeded) {
+          smoothedX = target.offsetX;
+          smoothedY = target.offsetY;
+          seeded = true;
+        } else {
+          smoothedX += FOLLOW_SMOOTH_ALPHA * (target.offsetX - smoothedX);
+          smoothedY += FOLLOW_SMOOTH_ALPHA * (target.offsetY - smoothedY);
+        }
+        offsetX = smoothedX;
+        offsetY = smoothedY;
+      }
+      segments.push({
+        startMs: t,
+        endMs: segEnd,
+        transform: { ...block.base, offsetX, offsetY },
+      });
+    }
+  }
+
+  // Paranoia — the concat filter hates empty segments. Drop anything
+  // that rounded down to zero duration (sub-1 ms fence-posts from the
+  // block boundaries).
+  return segments.filter((s) => s.endMs - s.startMs >= 1);
+}
+
+/**
+ * Build a filter-graph fragment that produces a single segmented
+ * `[screenOut]` stream at (targetW, targetH), derived from the screen
+ * input at `screenIdx`. Uses `split` + per-segment `trim` + transform +
+ * `concat` — one decode pass, many output frames.
+ *
+ * Returns null if segmentation would produce zero segments (empty scene).
+ */
+function screenSegmentsGraph(
+  segments: ScreenSegment[],
+  screenIdx: number,
+  targetW: number,
+  targetH: number,
+  suffix: string,
+): { chain: string; outLabel: string } | null {
+  if (segments.length === 0) return null;
+  const n = segments.length;
+  const splitLabels = Array.from({ length: n }, (_, i) => `sp${suffix}${i}`);
+  const splitChain = `[${screenIdx}:v]split=${n}${splitLabels
+    .map((l) => `[${l}]`)
+    .join('')}`;
+  const segChains: string[] = [];
+  const segOuts: string[] = [];
+  for (let i = 0; i < n; i++) {
+    const seg = segments[i];
+    const trimLabel = `trm${suffix}${i}`;
+    const dur = (seg.endMs - seg.startMs) / 1000;
+    const startSec = seg.startMs / 1000;
+    segChains.push(
+      `[${splitLabels[i]}]trim=start=${startSec.toFixed(3)}:` +
+        `duration=${dur.toFixed(3)},setpts=PTS-STARTPTS[${trimLabel}]`,
+    );
+    const { chain: tchain, outLabel } = transformedSource(
+      trimLabel,
+      targetW,
+      targetH,
+      seg.transform,
+      dur,
+      `${suffix}${i}`,
+    );
+    segChains.push(tchain);
+    segOuts.push(outLabel);
+  }
+  const outLabel = `segout_${suffix}`;
+  const concatChain = `${segOuts.join('')}concat=n=${n}:v=1:a=0[${outLabel}]`;
+  const chain = [splitChain, ...segChains, concatChain].join(';');
+  return { chain, outLabel: `[${outLabel}]` };
 }
 
 function ffmpegBinary(): string {
@@ -141,27 +436,70 @@ function sceneFilterGraph(
   orientation: ExportRequest['orientation'],
   screenIdx: number | null,
   camIdx: number | null,
+  cursorTrack: ExportRequest['cursorTrack'] | undefined,
+  screenOffsetMs: number,
 ): string {
   const layout = scene.layout;
   const durSec = (scene.end - scene.start) / 1000;
   const finalBg =
     `color=c=black:s=${canvasW}x${canvasH}:d=${durSec.toFixed(3)},format=yuv420p[canvas_bg]`;
 
-  if (layout === 'screen-only' && screenIdx !== null) {
-    const { chain, outLabel } = transformedSource(
-      screenIdx,
-      canvasW,
-      canvasH,
-      scene.screenTransform,
-      durSec,
-      'screen',
+  // Does this scene need segmentation (zoom clips or follow-cursor)? If
+  // not, we take the cheap single-transform path that v0.1 shipped with.
+  const hasEffects =
+    scene.zoomClips.length > 0 ||
+    (scene.followCursor && !!cursorTrack && cursorTrack.samples.length > 0);
+
+  /**
+   * Build the screen stream for this scene at (targetW, targetH), either
+   * as a single transformedSource or as a segmented chain. Returns null
+   * if `screenIdx` is null (layouts that don't render the screen).
+   */
+  const buildScreenStream = (
+    targetW: number,
+    targetH: number,
+    suffix: string,
+  ): { chain: string; outLabel: string } | null => {
+    if (screenIdx === null) return null;
+    if (!hasEffects) {
+      return transformedSource(
+        `${screenIdx}:v`,
+        targetW,
+        targetH,
+        scene.screenTransform,
+        durSec,
+        suffix,
+      );
+    }
+    const segments = planScreenSegments(
+      scene,
+      { width: canvasW, height: canvasH },
+      cursorTrack,
+      screenOffsetMs,
+      targetW,
+      targetH,
     );
-    // The transformed source is already canvas-sized — no further compositing.
-    return `${chain};${outLabel}copy[outv]`;
+    return (
+      screenSegmentsGraph(segments, screenIdx, targetW, targetH, suffix) ??
+      transformedSource(
+        `${screenIdx}:v`,
+        targetW,
+        targetH,
+        scene.screenTransform,
+        durSec,
+        suffix,
+      )
+    );
+  };
+
+  if (layout === 'screen-only' && screenIdx !== null) {
+    const stream = buildScreenStream(canvasW, canvasH, 'screen');
+    if (!stream) return `${finalBg};[canvas_bg]copy[outv]`;
+    return `${stream.chain};${stream.outLabel}copy[outv]`;
   }
   if ((layout === 'cam-only' || layout === 'mobile-only') && camIdx !== null) {
     const { chain, outLabel } = transformedSource(
-      camIdx,
+      `${camIdx}:v`,
       canvasW,
       canvasH,
       scene.camTransform,
@@ -174,8 +512,9 @@ function sceneFilterGraph(
     const isPortrait = orientation === 'portrait' || orientation === 'square';
     const halfW = isPortrait ? canvasW : Math.floor(canvasW / 2);
     const halfH = isPortrait ? Math.floor(canvasH / 2) : canvasH;
-    const s = transformedSource(screenIdx, halfW, halfH, scene.screenTransform, durSec, 'screen');
-    const c = transformedSource(camIdx, halfW, halfH, scene.camTransform, durSec, 'cam');
+    const s = buildScreenStream(halfW, halfH, 'screen');
+    if (!s) return `${finalBg};[canvas_bg]copy[outv]`;
+    const c = transformedSource(`${camIdx}:v`, halfW, halfH, scene.camTransform, durSec, 'cam');
     const layoutFilter = isPortrait
       ? `${s.outLabel}${c.outLabel}vstack=inputs=2[outv]`
       : `${s.outLabel}${c.outLabel}hstack=inputs=2[outv]`;
@@ -192,16 +531,10 @@ function sceneFilterGraph(
       scene.bubbleCorner === 'bl' || scene.bubbleCorner === 'br'
         ? canvasH - bubble - margin
         : margin;
-    const s = transformedSource(
-      screenIdx,
-      canvasW,
-      canvasH,
-      scene.screenTransform,
-      durSec,
-      'screen',
-    );
+    const s = buildScreenStream(canvasW, canvasH, 'screen');
+    if (!s) return `${finalBg};[canvas_bg]copy[outv]`;
     const c = transformedSource(
-      camIdx,
+      `${camIdx}:v`,
       bubble,
       bubble,
       scene.camTransform,
@@ -287,6 +620,8 @@ async function renderScene(
     req.orientation,
     screenIdx,
     camIdx,
+    req.cursorTrack,
+    screenTrack?.offsetMs ?? 0,
   );
   const filter = audioFilter ? `${videoFilter};${audioFilter}` : videoFilter;
 
@@ -307,6 +642,62 @@ async function renderScene(
   return outFile;
 }
 
+/**
+ * Expand a scene into a list of trim-free sub-scenes that together cover
+ * everything except the cut ranges. Each sub-scene inherits the parent's
+ * layout/transforms/zoom clips, with clips clamped or dropped if they
+ * fall outside the surviving range. Returns [scene] unchanged if the
+ * scene has no trim clips.
+ *
+ * Why pre-split rather than teach the filter graph about trims? The
+ * per-scene graph already does enough work. Treating each surviving
+ * range as an independent "scene" reuses the entire render pipeline —
+ * concat demuxer then stitches the sub-files just like it already does
+ * for scene boundaries.
+ */
+function splitSceneByTrims(
+  scene: ExportRequest['scenes'][number],
+): ExportRequest['scenes'] {
+  if (!scene.trimClips || scene.trimClips.length === 0) return [scene];
+  const trims = [...scene.trimClips]
+    .sort((a, b) => a.start - b.start)
+    .map((t) => ({
+      start: Math.max(scene.start, t.start),
+      end: Math.min(scene.end, t.end),
+    }))
+    .filter((t) => t.end > t.start);
+
+  // Produce surviving ranges: gaps between the sorted trims, clamped to
+  // the scene bounds. Fencepost at scene.start and scene.end.
+  const surviving: Array<{ start: number; end: number }> = [];
+  let cursor = scene.start;
+  for (const t of trims) {
+    if (t.start > cursor) surviving.push({ start: cursor, end: t.start });
+    cursor = Math.max(cursor, t.end);
+  }
+  if (cursor < scene.end) surviving.push({ start: cursor, end: scene.end });
+
+  return surviving.map((range, i) => ({
+    ...scene,
+    id: `${scene.id}__trim${i}`,
+    start: range.start,
+    end: range.end,
+    // Clip zoom clips to the surviving range. A zoom overlapping the
+    // boundary keeps the overlapping portion; a zoom fully inside a
+    // trim is dropped.
+    zoomClips: scene.zoomClips
+      .map((c) => ({
+        ...c,
+        start: Math.max(c.start, range.start),
+        end: Math.min(c.end, range.end),
+      }))
+      .filter((c) => c.end > c.start),
+    // trimClips are consumed by the split — no need to pass them
+    // downstream to the renderer.
+    trimClips: [],
+  }));
+}
+
 export async function exportProject(req: ExportRequest): Promise<{ outputPath: string }> {
   if (req.scenes.length === 0) throw new Error('no scenes to export');
   if (!req.outputPath) throw new Error('outputPath required');
@@ -314,7 +705,13 @@ export async function exportProject(req: ExportRequest): Promise<{ outputPath: s
   const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'threelane-export-'));
   const sceneFiles: string[] = [];
   try {
-    for (const scene of req.scenes) {
+    // Expand each scene into trim-free sub-scenes. The renderer only
+    // ever sees scenes with zero trimClips after this.
+    const expanded = req.scenes.flatMap(splitSceneByTrims);
+    if (expanded.length === 0) {
+      throw new Error('every scene is fully trimmed — nothing to export');
+    }
+    for (const scene of expanded) {
       sceneFiles.push(await renderScene(scene, req, workDir));
     }
 

@@ -144,6 +144,37 @@ header {
   animation: pulse 1s infinite;
 }
 
+/* Floating flip-camera button. Lives in the top-right of the preview,
+   mirroring the rec-pill's top-left placement. Round so it reads as an
+   action distinct from the rectangular status pill. */
+.flip-btn {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 0;
+  padding: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  color: #fafafa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.flip-btn:active {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+.flip-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .hidden {
   display: none !important;
 }

@@ -69,9 +69,21 @@ export function registerIpc() {
 
   ipcMain.handle(
     'recorder:startCursorTracking',
-    async (_e, payload: { projectId: string; startedAtMs: number }) => {
+    async (
+      _e,
+      payload: {
+        projectId: string;
+        startedAtMs: number;
+        screenSourceId: string | null;
+      },
+    ) => {
       const dir = path.join(projectsRoot(), payload.projectId);
-      return startCursorTracking(payload.projectId, dir, payload.startedAtMs);
+      return startCursorTracking(
+        payload.projectId,
+        dir,
+        payload.startedAtMs,
+        payload.screenSourceId,
+      );
     },
   );
 

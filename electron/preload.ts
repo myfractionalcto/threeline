@@ -26,8 +26,16 @@ contextBridge.exposeInMainWorld('threelane', {
       ipcRenderer.invoke('recorder:finalizeTrack', { projectId, trackId }),
     finalizeProject: (projectId: string, manifest: unknown) =>
       ipcRenderer.invoke('recorder:finalizeProject', { projectId, manifest }),
-    startCursorTracking: (projectId: string, startedAtMs: number) =>
-      ipcRenderer.invoke('recorder:startCursorTracking', { projectId, startedAtMs }),
+    startCursorTracking: (
+      projectId: string,
+      startedAtMs: number,
+      screenSourceId: string | null,
+    ) =>
+      ipcRenderer.invoke('recorder:startCursorTracking', {
+        projectId,
+        startedAtMs,
+        screenSourceId,
+      }),
     stopCursorTracking: (projectId: string) =>
       ipcRenderer.invoke('recorder:stopCursorTracking', projectId),
   },

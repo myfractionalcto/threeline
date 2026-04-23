@@ -37,6 +37,35 @@
         <div id="rec-pill" class="rec-pill hidden">
           <span class="rec-dot"></span>REC&nbsp;<span id="rec-timer">00:00</span>
         </div>
+        <!-- Flip front/back camera. Hidden until the user has granted
+             camera access — no point showing a switch before there's a
+             feed. Disabled mid-recording: MediaRecorder is bound to the
+             original tracks and can't swap sources cleanly. -->
+        <button
+          id="flip-cam"
+          type="button"
+          class="flip-btn hidden"
+          aria-label="Flip camera"
+          title="Flip camera"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="22"
+            height="22"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5" />
+            <path d="M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5" />
+            <circle cx="12" cy="12" r="3" />
+            <path d="m18 22-3-3 3-3" />
+            <path d="m6 2 3 3-3 3" />
+          </svg>
+        </button>
       </section>
 
       <section class="controls">

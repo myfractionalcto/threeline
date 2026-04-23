@@ -1,7 +1,14 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 import type { MediaMap } from './usePlayback';
 import { composite, primaryRole, roleTargetRect } from './compositor';
-import { cursorAt, followOffset, smoothOffset } from './cursorFollow';
+import {
+  activeZoomClip,
+  cursorAt,
+  cursorCanvasPos,
+  drawCursorOverlay,
+  followOffset,
+  smoothOffset,
+} from './cursorFollow';
 import type { EditorProject, Scene, SourceRole, SourceTransform } from './types';
 
 interface Props {
@@ -31,11 +38,15 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(
   const wrapRef = useRef<HTMLDivElement>(null);
   const playheadRef = useRef(playheadMs);
   playheadRef.current = playheadMs;
-  // Smoothed cursor-follow offset carried across frames. Reset on scene change.
-  const followRef = useRef<{ x: number; y: number; sceneId: string | null }>({
+  // Smoothed cursor-follow offset carried across frames. The `key`
+  // identifies what's currently driving the follow — a zoom clip
+  // (`clip:<id>`), the scene baseline (`scene:<id>`), or nothing (null).
+  // When the key flips between sources we snap to the fresh target rather
+  // than tweening — prevents a visible jump/drift at the transition.
+  const followRef = useRef<{ x: number; y: number; key: string | null }>({
     x: 0,
     y: 0,
-    sceneId: null,
+    key: null,
   });
 
   useImperativeHandle(outerRef, () => ({
@@ -72,57 +83,108 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(
         const screen = mediaRef.current['screen'];
         const cam = mediaRef.current['laptop-cam'];
         const mobile = mediaRef.current['mobile-cam'];
-        // Resolve the active transform for the screen source. If
-        // followCursor is on and we have a cursor track, override offsetX/Y
-        // to center the zoomed view on the cursor (with smoothing).
-        let screenTransform = s.screenTransform;
         const scrEl = screen as HTMLVideoElement | undefined;
-        if (
-          s.screenTransform.followCursor &&
+
+        // Resolve the active zoom clip for the screen, if any. When a
+        // clip covers the current playhead, it replaces the screen's
+        // zoom / offsets for this frame — and, if the clip asks for
+        // cursor-follow, the offsets are overridden per-frame to track
+        // the recorded cursor with temporal smoothing.
+        let screenTransform = s.screenTransform;
+        const clip = activeZoomClip(s.zoomClips, playheadRef.current);
+
+        // Compute cursor-in-source once if any consumer (zoom clip follow
+        // OR scene-level follow OR project-level big cursor overlay) will
+        // need it.
+        let cursorInSrc: { x: number; y: number } | null = null;
+        const wantsCursor =
+          (project.showCursorOverlay ||
+            (clip && clip.followCursor) ||
+            (!clip && s.followCursor)) &&
           project.cursorTrack &&
           scrEl &&
-          scrEl.videoWidth > 0
-        ) {
-          // Reset smoothing state on scene change to avoid a big jump.
-          if (followRef.current.sceneId !== s.id) {
-            followRef.current = { x: s.screenTransform.offsetX, y: s.screenTransform.offsetY, sceneId: s.id };
-          }
-          // Cursor time is in the screen-track's local time, not output time.
+          scrEl.videoWidth > 0;
+        if (wantsCursor) {
+          // Cursor samples are keyed on screen-track local time, not output time.
           const screenTrack = project.tracks.find((t) => t.kind === 'screen');
           const screenOffsetMs = screenTrack
             ? screenTrack.startedAtMs - project.sessionStartMs
             : 0;
           const trackMs = playheadRef.current - screenOffsetMs;
-          const raw = cursorAt(project.cursorTrack, trackMs);
+          const raw = cursorAt(project.cursorTrack!, trackMs);
           if (raw) {
-            // Cursor is in recording display DIP; scale to source pixels.
-            const track = project.cursorTrack;
-            const srcW = scrEl.videoWidth;
-            const srcH = scrEl.videoHeight;
-            const cursorInSrc = {
+            const track = project.cursorTrack!;
+            const srcW = scrEl!.videoWidth;
+            const srcH = scrEl!.videoHeight;
+            cursorInSrc = {
               x: raw.x * (srcW / track.display.width),
               y: raw.y * (srcH / track.display.height),
             };
+          }
+        }
+
+        // Decide the "base" transform and whether to run cursor-follow.
+        // Three cases:
+        //   1) Active zoom clip — clip zoom/offset, clip.followCursor flag.
+        //   2) No clip, scene.followCursor on — scene screenTransform, follow.
+        //   3) No clip, no scene follow — scene screenTransform, no follow.
+        if (scrEl && scrEl.videoWidth > 0) {
+          const base: typeof s.screenTransform = clip
+            ? {
+                ...s.screenTransform,
+                zoom: clip.zoom,
+                offsetX: clip.offsetX,
+                offsetY: clip.offsetY,
+              }
+            : s.screenTransform;
+          const wantsFollow =
+            cursorInSrc !== null &&
+            (clip ? clip.followCursor : s.followCursor);
+          const followKey = clip ? `clip:${clip.id}` : `scene:${s.id}`;
+
+          if (wantsFollow && cursorInSrc) {
             const target = followOffset(
               cursorInSrc,
-              { width: srcW, height: srcH },
+              { width: scrEl.videoWidth, height: scrEl.videoHeight },
               { width: project.canvas.width, height: project.canvas.height },
-              s.screenTransform,
+              base,
             );
+            // At a follow transition (scene → clip, clip → scene, new
+            // clip) snap instead of tweening from wherever we left off.
+            // Otherwise the first ~250ms shows the old offset drifting
+            // into the new pose, which reads as "stuck at the top of the
+            // screen for a moment." Snap first, smooth after.
+            if (followRef.current.key !== followKey) {
+              followRef.current = {
+                x: target.offsetX,
+                y: target.offsetY,
+                key: followKey,
+              };
+            }
             const smoothed = smoothOffset(
               { x: followRef.current.x, y: followRef.current.y },
               target,
+              0.25, // snappier than the old 0.15 — less visible lag.
             );
             followRef.current.x = smoothed.x;
             followRef.current.y = smoothed.y;
             screenTransform = {
-              ...s.screenTransform,
+              ...base,
               offsetX: smoothed.x,
               offsetY: smoothed.y,
             };
+          } else {
+            // Not following — use the base as-is. Seed the smoothing
+            // buffer with the current offset so the next follow
+            // transition has a sensible starting point (even though
+            // we'll snap on the first follow frame regardless).
+            followRef.current = {
+              x: base.offsetX,
+              y: base.offsetY,
+              key: clip ? `clip:${clip.id}:still` : `scene:${s.id}:still`,
+            };
+            screenTransform = base;
           }
-        } else {
-          followRef.current.sceneId = null;
         }
 
         composite(
@@ -139,6 +201,30 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(
           screenTransform,
           s.camTransform,
         );
+
+        // Big cursor overlay — drawn after compositing so it sits on
+        // top of both the screen and the bubble. Only meaningful on
+        // layouts that actually show the screen (the cursor's source).
+        if (
+          project.showCursorOverlay &&
+          cursorInSrc &&
+          scrEl &&
+          (s.layout === 'screen-only' ||
+            s.layout === 'screen-with-bubble' ||
+            s.layout === 'split-horizontal')
+        ) {
+          const rect = roleTargetRect('screen', s.layout, project.canvas);
+          const pos = cursorCanvasPos(
+            cursorInSrc,
+            { width: scrEl.videoWidth, height: scrEl.videoHeight },
+            { x: rect.x, y: rect.y, width: rect.w, height: rect.h },
+            screenTransform,
+          );
+          if (pos) {
+            const minDim = Math.min(project.canvas.width, project.canvas.height);
+            drawCursorOverlay(ctx, pos.x, pos.y, minDim);
+          }
+        }
       } else {
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, c.width, c.height);
@@ -147,7 +233,16 @@ export const Preview = forwardRef<PreviewHandle, Props>(function Preview(
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [project.canvas, project.cursorTrack, project.tracks, project.sessionStartMs, scene, mediaRef, playing]);
+  }, [
+    project.canvas,
+    project.cursorTrack,
+    project.tracks,
+    project.sessionStartMs,
+    project.showCursorOverlay,
+    scene,
+    mediaRef,
+    playing,
+  ]);
 
   // Drag-to-pan on the canvas.
   const dragStateRef = useRef<{
