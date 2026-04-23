@@ -56,13 +56,14 @@ jobs:
 
       - name: electron-builder (${{ matrix.platform }})
         shell: bash
-        run: npx electron-builder --${{ matrix.platform }} -c electron-builder.yml
-        env:
-          # electron-builder reads GH_TOKEN to decide whether to publish.
-          # We don't auto-publish from here (the release job uploads via
-          # softprops instead) — passing the token just quiets the
-          # "no token found" warning.
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --publish=never is load-bearing: without it, electron-builder
+        # sees the tag context + a GH_TOKEN and tries to create the
+        # GitHub Release itself. The build job only has default
+        # (read-only) `contents` permission, so that POST fails with
+        # 403 Forbidden. We want the dedicated `release` job below to
+        # create the Release via softprops — which has `contents: write`
+        # — so tell electron-builder to just build artifacts and stop.
+        run: npx electron-builder --${{ matrix.platform }} --publish=never -c electron-builder.yml
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
