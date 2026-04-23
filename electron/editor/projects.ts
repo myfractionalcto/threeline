@@ -1,6 +1,5 @@
 import { app } from 'electron';
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import path from 'node:path';
 import { loadCursorTrack } from '../recorder/cursor';
 
@@ -14,42 +13,8 @@ import { loadCursorTrack } from '../recorder/cursor';
  * doesn't block direct file:// access.
  */
 
-/**
- * On-disk projects folder. Also handles a one-time migration from older
- * folders (`~/Movies/SnapScreen` → `Three Line` → `Three Lane` → `Threelane`)
- * so any recordings made with earlier builds stay visible after each rename.
- */
 export function projectsRoot(): string {
-  const root = path.join(app.getPath('home'), 'Movies', 'Threelane');
-  migrateLegacyRoot(root);
-  return root;
-}
-
-let legacyMigrationChecked = false;
-function migrateLegacyRoot(newRoot: string) {
-  if (legacyMigrationChecked) return;
-  legacyMigrationChecked = true;
-  // Try each predecessor in order — whichever exists first wins. Newest
-  // name first so we prefer the most recent folder if more than one is
-  // present. Older siblings are left alone for the user to sort out.
-  const predecessors = [
-    path.join(app.getPath('home'), 'Movies', 'Three Lane'),
-    path.join(app.getPath('home'), 'Movies', 'Three Line'),
-    path.join(app.getPath('home'), 'Movies', 'SnapScreen'),
-  ];
-  try {
-    if (fsSync.existsSync(newRoot)) return;
-    for (const legacy of predecessors) {
-      if (fsSync.existsSync(legacy)) {
-        fsSync.renameSync(legacy, newRoot);
-        console.log(`Migrated projects folder: ${legacy} → ${newRoot}`);
-        return;
-      }
-    }
-  } catch (e) {
-    // Best-effort — don't block app launch over a rename failure.
-    console.warn('projects-folder migration failed:', e);
-  }
+  return path.join(app.getPath('home'), 'Movies', 'Threelane');
 }
 
 function projectUrl(projectId: string, file: string): string {

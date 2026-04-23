@@ -14,12 +14,6 @@ import forge from 'node-forge';
  * browser SSL warnings, and PWA install + getUserMedia work properly.
  *
  * This is the "mkcert-style" approach from PLAN.md §3.4.
- *
- * Note on renames: the product name has drifted (SnapScreen → Threelane →
- * Threelane) and the CA file paths followed. We preserve existing CAs
- * across the last rename by reading any legacy filename as a fallback — so
- * phones that already trust the CA don't need a re-install just because
- * the desktop app changed its name.
  */
 
 export interface ServerCert {
@@ -31,11 +25,6 @@ export interface ServerCert {
 
 const CA_FILE = 'threelane-ca.json';
 const LEAF_FILE = 'threelane-leaf.json';
-// Older filenames we still read from if the current one is missing. Order
-// matters: newest predecessor first. We never write to these — the next
-// save uses CA_FILE / LEAF_FILE.
-const CA_FILE_LEGACY = ['threeline-ca.json'];
-const LEAF_FILE_LEGACY = ['threeline-leaf.json'];
 
 interface StoredCA {
   cert: string;
@@ -80,22 +69,6 @@ async function readJson<T>(name: string): Promise<T | null> {
   }
 }
 
-/**
- * Read the first available file from a priority list. Used for legacy-name
- * fallback during product rebrands — the current name is tried first, and
- * we fall back to predecessors only if it's missing. The first successful
- * read wins; nothing is deleted.
- */
-async function readJsonWithFallback<T>(
-  names: readonly string[],
-): Promise<T | null> {
-  for (const name of names) {
-    const got = await readJson<T>(name);
-    if (got) return got;
-  }
-  return null;
-}
-
 async function writeJson(name: string, data: unknown): Promise<void> {
   await fs.writeFile(path.join(dataDir(), name), JSON.stringify(data), 'utf8');
 }
@@ -134,17 +107,8 @@ function generateCA(): StoredCA {
 }
 
 async function getOrCreateCA(): Promise<StoredCA> {
-  const cached = await readJsonWithFallback<StoredCA>([
-    CA_FILE,
-    ...CA_FILE_LEGACY,
-  ]);
-  if (cached?.cert && cached?.key) {
-    // If we loaded from a legacy file, rewrite under the new name so
-    // subsequent launches skip the fallback lookup. Write failures are
-    // non-fatal — we still have the cert in memory.
-    await writeJson(CA_FILE, cached).catch(() => {});
-    return cached;
-  }
+  const cached = await readJson<StoredCA>(CA_FILE);
+  if (cached?.cert && cached?.key) return cached;
   const fresh = generateCA();
   await writeJson(CA_FILE, fresh);
   return fresh;
@@ -216,10 +180,7 @@ export async function getOrCreateCert(): Promise<ServerCert> {
   const ca = await getOrCreateCA();
 
   // Reuse cached leaf if the IP hasn't changed
-  const cached = await readJsonWithFallback<StoredLeaf>([
-    LEAF_FILE,
-    ...LEAF_FILE_LEGACY,
-  ]);
+  const cached = await readJson<StoredLeaf>(LEAF_FILE);
   if (cached?.cert && cached?.key && cached?.ip === ip) {
     return { cert: cached.cert, key: cached.key, ca: ca.cert, ip };
   }

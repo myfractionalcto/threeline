@@ -9,13 +9,12 @@
  * cached. This way edits on the laptop show up immediately on reload —
  * no more stuck-on-old-code problems.
  *
- * Version bumped from v1 → v2 so the old cache-first caches are dropped.
- * v3 bumps again for the product rename (Three Line → Threelane) — the
- * cache-name change guarantees any stale shell with the old branding is
- * replaced on the first launch after update.
+ * Bump the cache name (v1 → v2 → …) whenever the shell assets change in
+ * a way that would be incompatible with an old cached copy. The activate
+ * handler drops any cache whose name doesn't match.
  */
 
-const CACHE = 'threelane-mobile-v3';
+const CACHE = 'threelane-mobile-v1';
 const SHELL = [
   '/',
   '/index.html',
