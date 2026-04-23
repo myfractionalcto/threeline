@@ -19,11 +19,8 @@ export interface ProjectInfo {
 const streams = new Map<string, fs.WriteStream>(); // key = projectId/trackId
 
 function projectsRoot(): string {
-  // User-visible recordings go into ~/Movies/Threelane/ (renamed from
-  // SnapScreen → Three Line → Three Lane → Threelane). The editor-side
-  // projectsRoot() in editor/projects.ts handles the one-time folder
-  // migration on first read, so by the time a new recording lands here
-  // the rename is done.
+  // User-visible recordings go into ~/Movies/Threelane/. Mirrors the
+  // editor-side projectsRoot() in editor/projects.ts.
   return path.join(app.getPath('home'), 'Movies', 'Threelane');
 }
 

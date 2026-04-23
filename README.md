@@ -9,9 +9,9 @@
 </p>
 
 <p align="center">
-  <a href="https://threeline.myfractionalcto.com">Website</a> &nbsp;·&nbsp;
+  <a href="https://threelane.myfractionalcto.com">Website</a> &nbsp;·&nbsp;
   <a href="../../releases/latest">Download</a> &nbsp;·&nbsp;
-  <a href="https://myfractionalcto.slack.com">Slack</a> &nbsp;·&nbsp;
+  <a href="https://join.slack.com/t/myfractionalcto/shared_invite/zt-3vswpelsn-OUyLH0Wf5s_jscxTlIo~yA">Slack</a> &nbsp;·&nbsp;
   <a href="CONTRIBUTING.md">Contributing</a> &nbsp;·&nbsp;
   <a href="PLAN.md">Architecture</a>
 </p>
@@ -39,7 +39,7 @@ Built for indie hackers recording launch videos, devtool founders shipping
 demos, dev-rel engineers making tutorials, and anyone who's tired of screen
 recorders that want to live in the cloud.
 
-More on the [website](https://threeline.myfractionalcto.com).
+More on the [website](https://threelane.myfractionalcto.com).
 
 ## Screenshots
 
@@ -136,7 +136,7 @@ in Applications → **Open**, then click **Open** in the dialog
 ## Community
 
 Questions, feedback, bug reports? Join the Slack:
-[myfractionalcto.slack.com](https://myfractionalcto.slack.com)
+[Join myfractionalcto on Slack](https://join.slack.com/t/myfractionalcto/shared_invite/zt-3vswpelsn-OUyLH0Wf5s_jscxTlIo~yA)
 
 Or open an issue on this repo.
 

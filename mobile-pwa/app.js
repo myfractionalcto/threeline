@@ -44,11 +44,6 @@ const SAVED_URL_KEY = 'threelane:serverUrl';
  *  connection failures (likely DNS-rebinding protection on this WiFi) can
  *  point the user at the raw-IP URL they'd need to visit instead. */
 const FALLBACK_URL_KEY = 'threelane:fallbackUrl';
-// Predecessors from earlier product names. Read-only fallback so a phone
-// that already has a saved URL under the old name keeps reconnecting after
-// the rebrand. Migrated forward the first time they're read.
-const SAVED_URL_KEY_LEGACY = ['threeline:serverUrl'];
-const FALLBACK_URL_KEY_LEGACY = ['threeline:fallbackUrl'];
 const RETRY_BASE_MS = 1500;
 const RETRY_MAX_MS = 8000;
 
@@ -104,7 +99,11 @@ function pickMime() {
 
 /** Read last known-good server URL from localStorage. */
 function savedUrl() {
-  return readWithLegacy(SAVED_URL_KEY, SAVED_URL_KEY_LEGACY);
+  try {
+    return localStorage.getItem(SAVED_URL_KEY) || null;
+  } catch {
+    return null;
+  }
 }
 
 function saveUrl(origin) {
@@ -112,28 +111,6 @@ function saveUrl(origin) {
     localStorage.setItem(SAVED_URL_KEY, origin);
   } catch {
     // Private mode or quota — ignore.
-  }
-}
-
-/**
- * Read a localStorage value, falling back to legacy key names from earlier
- * product renames. On a legacy hit, copy the value forward to the new key
- * so the next read doesn't pay the fallback cost.
- */
-function readWithLegacy(key, legacyKeys) {
-  try {
-    const v = localStorage.getItem(key);
-    if (v && v.length > 0) return v;
-    for (const legacy of legacyKeys) {
-      const lv = localStorage.getItem(legacy);
-      if (lv && lv.length > 0) {
-        try { localStorage.setItem(key, lv); } catch {}
-        return lv;
-      }
-    }
-    return null;
-  } catch {
-    return null;
   }
 }
 
@@ -161,7 +138,11 @@ function saveFallbackUrl() {
 }
 
 function fallbackUrl() {
-  return readWithLegacy(FALLBACK_URL_KEY, FALLBACK_URL_KEY_LEGACY);
+  try {
+    return localStorage.getItem(FALLBACK_URL_KEY) || null;
+  } catch {
+    return null;
+  }
 }
 
 /**

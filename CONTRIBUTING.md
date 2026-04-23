@@ -6,7 +6,7 @@ get your work merged.
 
 If anything here is unclear, open a
 [discussion](../../discussions) or ask in
-[Slack](https://myfractionalcto.slack.com).
+[Slack](https://join.slack.com/t/myfractionalcto/shared_invite/zt-3vswpelsn-OUyLH0Wf5s_jscxTlIo~yA).
 
 ---
 
@@ -36,8 +36,8 @@ Prerequisites:
 Clone, install, run:
 
 ```bash
-git clone https://github.com/myfractionalcto/threeline.git
-cd threeline
+git clone https://github.com/myfractionalcto/threelane.git
+cd threelane
 npm install
 npm run dev        # Vite + Electron with hot reload
 ```
@@ -256,7 +256,7 @@ DM in Slack.
 
 - **Project direction & big-picture questions** — open a
   [Discussion](../../discussions).
-- **Chat & quick questions** — [Slack](https://myfractionalcto.slack.com).
+- **Chat & quick questions** — [Slack](https://join.slack.com/t/myfractionalcto/shared_invite/zt-3vswpelsn-OUyLH0Wf5s_jscxTlIo~yA).
 - **Bugs & concrete feature requests** — [Issues](../../issues).
 
 Thanks for contributing.
