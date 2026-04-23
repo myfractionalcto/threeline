@@ -37,7 +37,12 @@ mac:
     # and the deprecated AVCaptureDeviceTypeExternal warning goes away.
     NSCameraUseContinuityCameraDeviceType: true
 dmg:
-  title: Threelane ${version}
+  # Include ${arch} so the arm64 and x64 DMGs mount as distinct volumes
+  # (`Threelane 0.2.0 arm64` vs `Threelane 0.2.0 x64`). With just the
+  # version, both DMGs mount at `/Volumes/Threelane 0.2.0` and the
+  # second build's `hdiutil detach` races with the first's cleanup,
+  # failing with exit code 1 on macos-latest runners.
+  title: Threelane ${version} ${arch}
   writeUpdateInfo: false
 # Windows target. NSIS installer is the default for electron-builder —
 # produces a single .exe that drops the app into the user's AppData and
