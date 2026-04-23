@@ -169,33 +169,40 @@ export function Timeline({
             className="text-xs px-2 py-1.5 rounded-md border border-border hover:border-destructive/60 flex items-center gap-1.5 disabled:opacity-40"
           >
             <Trash2 className="size-3.5" />
-            Delete scene
+            Delete split
           </button>
         </div>
       </div>
 
-      {/* Lane grid — ruler on top, one lane per track kind. A shared
-          playhead overlay spans all rows so the marker is always
-          visible regardless of which lane the user is looking at. */}
+      {/* Lane grid — ruler on top, one lane per track kind. All lanes
+          (including the ruler) sit inside a LaneLabel so their content
+          columns share the same horizontal bounds. The playhead is an
+          overlay that replicates the label offset — without that the
+          ruler's full-width ticks wouldn't line up with the scene /
+          zoom / trim blocks below them, which read visually as "split
+          is a couple seconds off from where I clicked." */}
       <div className="relative">
-        {/* Ruler */}
-        <div
-          ref={rulerRef}
-          className="relative h-7 rounded-md bg-secondary/30 border border-border cursor-pointer select-none"
-        >
-          {ticks.map((t) => (
-            <div
-              key={t}
-              className="absolute top-0 bottom-0 flex items-end pb-0.5 pointer-events-none"
-              style={{ left: `${toPct(t)}%` }}
-            >
-              <div className="w-px h-2 bg-border mr-1" />
-              <span className="text-[10px] font-mono text-muted-foreground leading-none">
-                {fmtShort(t)}
-              </span>
-            </div>
-          ))}
-        </div>
+        {/* Ruler — shares the same label-column offset as the lanes so
+            tick positions align with scene/zoom/trim block positions. */}
+        <LaneLabel icon={null} title="">
+          <div
+            ref={rulerRef}
+            className="relative h-7 rounded-md bg-secondary/30 border border-border cursor-pointer select-none"
+          >
+            {ticks.map((t) => (
+              <div
+                key={t}
+                className="absolute top-0 bottom-0 flex items-end pb-0.5 pointer-events-none"
+                style={{ left: `${toPct(t)}%` }}
+              >
+                <div className="w-px h-2 bg-border mr-1" />
+                <span className="text-[10px] font-mono text-muted-foreground leading-none">
+                  {fmtShort(t)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </LaneLabel>
 
         {/* Scene lane — one row showing the scene blocks. */}
         <LaneLabel icon={null} title="Scenes" className="mt-2">
@@ -256,13 +263,23 @@ export function Timeline({
           />
         </LaneLabel>
 
-        {/* Playhead — absolutely positioned over all lanes. Uses a
-            pointer-events:none wrapper so it never eats clicks. */}
-        <div
-          className="absolute top-0 bottom-0 w-px bg-red-500 pointer-events-none"
-          style={{ left: `${toPct(playheadMs)}%` }}
-        >
-          <div className="absolute -top-1 -translate-x-1/2 w-3 h-3 rounded-full bg-red-500" />
+        {/* Playhead — absolutely positioned over all lanes. Mirrors the
+            LaneLabel flex structure (w-16 spacer + flex-1 content) so
+            its % offset is measured against the lane-content region,
+            not the full timeline width — otherwise the playhead would
+            drift ~72 px right of the scene/zoom/trim blocks it's
+            meant to indicate. pointer-events:none so it never eats
+            clicks. */}
+        <div className="absolute inset-0 flex items-stretch gap-2 pointer-events-none">
+          <div className="w-16 shrink-0" />
+          <div className="flex-1 min-w-0 relative">
+            <div
+              className="absolute top-0 bottom-0 w-px bg-red-500"
+              style={{ left: `${toPct(playheadMs)}%` }}
+            >
+              <div className="absolute -top-1 -translate-x-1/2 w-3 h-3 rounded-full bg-red-500" />
+            </div>
+          </div>
         </div>
       </div>
 
