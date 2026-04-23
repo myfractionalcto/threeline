@@ -4,9 +4,12 @@ import {
   Camera,
   Image as ImageIcon,
   Monitor,
+  Plus,
   RotateCcw,
   Smartphone,
   SplitSquareHorizontal,
+  Trash2,
+  ZoomIn,
 } from 'lucide-react';
 import type {
   BubbleCorner,
@@ -17,11 +20,14 @@ import type {
   SecondarySource,
   SourceRole,
   SourceTransform,
+  ZoomClip,
 } from './types';
 
 interface Props {
   project: EditorProject;
   scene: Scene | null;
+  /** Output-time ms. Used to seed "add zoom clip at playhead". */
+  playheadMs: number;
   onLayoutChange: (l: Layout) => void;
   onAudioSourceChange: (t: TrackKind | null) => void;
   onBubbleChange: (c: BubbleCorner) => void;
@@ -29,6 +35,10 @@ interface Props {
   onCanvasChange: (o: Orientation) => void;
   onTransformChange: (role: SourceRole, patch: Partial<SourceTransform>) => void;
   onTransformReset: (role: SourceRole) => void;
+  onShowCursorOverlayChange: (show: boolean) => void;
+  onAddZoomClip: (start: number, end: number) => void;
+  onUpdateZoomClip: (clipId: string, patch: Partial<ZoomClip>) => void;
+  onRemoveZoomClip: (clipId: string) => void;
 }
 
 /**
@@ -37,6 +47,7 @@ interface Props {
 export function Inspector({
   project,
   scene,
+  playheadMs,
   onLayoutChange,
   onAudioSourceChange,
   onBubbleChange,
@@ -44,6 +55,10 @@ export function Inspector({
   onCanvasChange,
   onTransformChange,
   onTransformReset,
+  onShowCursorOverlayChange,
+  onAddZoomClip,
+  onUpdateZoomClip,
+  onRemoveZoomClip,
 }: Props) {
   const hasScreen = project.tracks.some((t) => t.kind === 'screen');
   const hasCam = project.tracks.some((t) => t.kind === 'laptop-cam');
@@ -91,6 +106,36 @@ export function Inspector({
             </button>
           ))}
         </div>
+        <label
+          className={cn(
+            'mt-3 flex items-start gap-2 px-3 py-2 rounded-md border cursor-pointer text-xs',
+            project.showCursorOverlay
+              ? 'border-foreground/70 bg-foreground/10'
+              : 'border-border hover:border-foreground/40',
+            !project.cursorTrack && 'cursor-not-allowed opacity-60',
+          )}
+          title={
+            project.cursorTrack
+              ? 'Draw a bold synthetic cursor on top of the frame — easier to see than the tiny OS cursor once the canvas is downscaled.'
+              : 'No cursor track — re-record in the desktop app to enable.'
+          }
+        >
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={project.showCursorOverlay}
+            disabled={!project.cursorTrack}
+            onChange={(e) => onShowCursorOverlayChange(e.target.checked)}
+          />
+          <span>
+            <div className="font-medium text-foreground">Big cursor</div>
+            <div className="text-muted-foreground">
+              {project.cursorTrack
+                ? 'High-contrast cursor drawn over the whole recording.'
+                : 'Desktop app only — web recordings can’t capture the cursor.'}
+            </div>
+          </span>
+        </label>
       </Section>
 
       {scene ? (
@@ -185,11 +230,21 @@ export function Inspector({
               role={role}
               transform={role === 'screen' ? scene.screenTransform : scene.camTransform}
               disabled={role === 'screen' ? !hasScreen : !hasCam}
-              cursorTrackAvailable={role === 'screen' && !!project.cursorTrack}
               onChange={(patch) => onTransformChange(role, patch)}
               onReset={() => onTransformReset(role)}
             />
           ))}
+
+          {visibleRoles(scene.layout).includes('screen') && hasScreen && (
+            <ZoomClipsSection
+              scene={scene}
+              playheadMs={playheadMs}
+              hasCursorTrack={!!project.cursorTrack}
+              onAdd={onAddZoomClip}
+              onUpdate={onUpdateZoomClip}
+              onRemove={onRemoveZoomClip}
+            />
+          )}
 
           <Section title="Audio source">
             <div className="space-y-1.5">
@@ -325,18 +380,16 @@ function TransformSection({
   role,
   transform,
   disabled,
-  cursorTrackAvailable,
   onChange,
   onReset,
 }: {
   role: SourceRole;
   transform: SourceTransform;
   disabled?: boolean;
-  cursorTrackAvailable?: boolean;
   onChange: (patch: Partial<SourceTransform>) => void;
   onReset: () => void;
 }) {
-  const label = role === 'screen' ? 'Screen adjust' : 'Camera adjust';
+  const label = role === 'screen' ? 'Screen framing' : 'Camera framing';
   if (disabled) return null;
   return (
     <div>
@@ -374,15 +427,6 @@ function TransformSection({
         </div>
 
         <Slider
-          label="Zoom"
-          value={transform.zoom}
-          min={0.5}
-          max={3}
-          step={0.05}
-          format={(v) => `${v.toFixed(2)}×`}
-          onChange={(v) => onChange({ zoom: v })}
-        />
-        <Slider
           label="X offset"
           value={transform.offsetX}
           min={-1}
@@ -401,44 +445,153 @@ function TransformSection({
           onChange={(v) => onChange({ offsetY: v })}
         />
         <p className="text-[11px] text-muted-foreground">
-          Drag on the preview to pan this source.
+          {role === 'screen'
+            ? 'Static framing for the whole scene. Zoom-in moments go on the timeline as Zoom clips.'
+            : 'Drag on the preview to pan this source.'}
         </p>
-
-        {role === 'screen' && (
-          <label
-            className={cn(
-              'flex items-start gap-2 px-3 py-2 rounded-md border cursor-pointer text-xs',
-              transform.followCursor
-                ? 'border-foreground/70 bg-foreground/10'
-                : 'border-border hover:border-foreground/40',
-              !cursorTrackAvailable && 'cursor-not-allowed opacity-60',
-            )}
-            title={
-              cursorTrackAvailable
-                ? 'Pan the zoomed view to follow the recorded mouse cursor.'
-                : 'No cursor track — re-record in the desktop app to enable.'
-            }
-          >
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={transform.followCursor}
-              disabled={!cursorTrackAvailable}
-              onChange={(e) => onChange({ followCursor: e.target.checked })}
-            />
-            <span>
-              <div className="font-medium text-foreground">Follow cursor</div>
-              <div className="text-muted-foreground">
-                {cursorTrackAvailable
-                  ? 'Zoom in, then let the mouse lead the frame.'
-                  : 'Desktop app only — web recordings can’t capture the cursor.'}
-              </div>
-            </span>
-          </label>
-        )}
       </div>
     </div>
   );
+}
+
+/**
+ * Zoom-clip manager for the active scene. Lists clips in time order,
+ * lets the user add one at the current playhead, edit in place, or
+ * remove. Full timeline UI (drag / resize clips) lives on the timeline
+ * itself in a later phase — this is the v0.2.0 data-model surface.
+ */
+function ZoomClipsSection({
+  scene,
+  playheadMs,
+  hasCursorTrack,
+  onAdd,
+  onUpdate,
+  onRemove,
+}: {
+  scene: Scene;
+  playheadMs: number;
+  hasCursorTrack: boolean;
+  onAdd: (start: number, end: number) => void;
+  onUpdate: (clipId: string, patch: Partial<ZoomClip>) => void;
+  onRemove: (clipId: string) => void;
+}) {
+  const clips = [...scene.zoomClips].sort((a, b) => a.start - b.start);
+  const handleAdd = () => {
+    // Default clip: 2s centered on the playhead, clamped to the scene.
+    const defaultDurMs = 2000;
+    const seed = Math.max(
+      scene.start,
+      Math.min(scene.end - 500, playheadMs - defaultDurMs / 2),
+    );
+    onAdd(seed, Math.min(scene.end, seed + defaultDurMs));
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-muted-foreground">
+          <ZoomIn className="size-3.5" />
+          Zoom clips
+        </div>
+        <button
+          type="button"
+          onClick={handleAdd}
+          title="Add a zoom clip at the playhead"
+          className="flex items-center gap-1 text-xs text-foreground/80 hover:text-foreground border border-border hover:border-foreground/40 rounded px-2 py-1"
+        >
+          <Plus className="size-3.5" />
+          Add
+        </button>
+      </div>
+      {clips.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No zoom clips yet. Click <em>Add</em> to drop one at the playhead —
+          the view will zoom in for the clip's time range and return to the
+          scene framing after.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {clips.map((c) => (
+            <ZoomClipRow
+              key={c.id}
+              clip={c}
+              hasCursorTrack={hasCursorTrack}
+              onUpdate={(patch) => onUpdate(c.id, patch)}
+              onRemove={() => onRemove(c.id)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ZoomClipRow({
+  clip,
+  hasCursorTrack,
+  onUpdate,
+  onRemove,
+}: {
+  clip: ZoomClip;
+  hasCursorTrack: boolean;
+  onUpdate: (patch: Partial<ZoomClip>) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-border p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-mono text-muted-foreground">
+          {msLabel(clip.start)} → {msLabel(clip.end)}
+        </div>
+        <button
+          type="button"
+          onClick={onRemove}
+          title="Remove clip"
+          className="text-muted-foreground hover:text-foreground"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      </div>
+      <Slider
+        label="Zoom"
+        value={clip.zoom}
+        min={1}
+        max={4}
+        step={0.05}
+        format={(v) => `${v.toFixed(2)}×`}
+        onChange={(v) => onUpdate({ zoom: v })}
+      />
+      <label
+        className={cn(
+          'flex items-start gap-2 px-2.5 py-2 rounded-md border cursor-pointer text-xs',
+          clip.followCursor
+            ? 'border-foreground/70 bg-foreground/10'
+            : 'border-border hover:border-foreground/40',
+          !hasCursorTrack && 'cursor-not-allowed opacity-60',
+        )}
+        title={
+          hasCursorTrack
+            ? 'Track the recorded cursor while the clip is active.'
+            : 'No cursor track — re-record in the desktop app to enable.'
+        }
+      >
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={clip.followCursor}
+          disabled={!hasCursorTrack}
+          onChange={(e) => onUpdate({ followCursor: e.target.checked })}
+        />
+        <span className="font-medium text-foreground">Follow cursor</span>
+      </label>
+    </div>
+  );
+}
+
+function msLabel(ms: number): string {
+  const totalSec = ms / 1000;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, '0')}`;
 }
 
 function Slider({

@@ -4,7 +4,9 @@ import {
   CANVAS_PRESETS,
   DEFAULT_CAM_TRANSFORM,
   DEFAULT_TRANSFORM,
+  DEFAULT_ZOOM_CLIP_ZOOM,
   genSceneId,
+  genZoomClipId,
   type BubbleCorner,
   type CanvasSize,
   type EditorProject,
@@ -14,6 +16,7 @@ import {
   type SecondarySource,
   type SourceRole,
   type SourceTransform,
+  type ZoomClip,
 } from './types';
 
 /**
@@ -132,7 +135,12 @@ export function useEditorState(initial: EditorProject | null) {
   /**
    * Split the scene containing `atMs` into two at that position. The new
    * scene inherits all properties from the original (including transforms,
-   * via a deep copy so subsequent edits don't mutate the sibling).
+   * via a deep copy so subsequent edits don't mutate the sibling). Zoom
+   * clips straddling the split are partitioned between the two sides by
+   * time — a clip entirely on one side goes untouched, and a clip
+   * straddling `atMs` is dropped from both. (Splitting clips mid-clip
+   * would give two orphan halves that almost never do what the user
+   * wants; better to make the user re-create.)
    */
   const splitAt = useCallback((atMs: number) => {
     setProject((p) => {
@@ -140,18 +148,22 @@ export function useEditorState(initial: EditorProject | null) {
       const idx = p.scenes.findIndex((s) => atMs > s.start && atMs < s.end);
       if (idx < 0) return p;
       const original = p.scenes[idx];
+      const leftClips = original.zoomClips.filter((c) => c.end <= atMs);
+      const rightClips = original.zoomClips.filter((c) => c.start >= atMs);
       const right: Scene = {
         ...original,
         id: genSceneId(),
         start: atMs,
         screenTransform: { ...original.screenTransform },
         camTransform: { ...original.camTransform },
+        zoomClips: rightClips.map((c) => ({ ...c })),
       };
       const left: Scene = {
         ...original,
         end: atMs,
         screenTransform: { ...original.screenTransform },
         camTransform: { ...original.camTransform },
+        zoomClips: leftClips.map((c) => ({ ...c })),
       };
       const next = [...p.scenes];
       next.splice(idx, 1, left, right);
@@ -183,6 +195,93 @@ export function useEditorState(initial: EditorProject | null) {
     setSelectedSceneId(null);
   }, []);
 
+  /**
+   * Project-wide flag: draw the big cursor overlay on top of the
+   * composite. Safe to call even when no cursor track is present —
+   * Preview won't draw anything without one.
+   */
+  const setShowCursorOverlay = useCallback((show: boolean) => {
+    setProject((p) => (p ? { ...p, showCursorOverlay: show } : p));
+  }, []);
+
+  /**
+   * Append a zoom clip to a scene. Caller supplies the time range — the
+   * caller is responsible for keeping non-overlapping invariants (the
+   * timeline UI will handle this; programmatic callers should pre-check).
+   * Returns the new clip id so the caller can select it afterwards.
+   */
+  const addZoomClip = useCallback(
+    (sceneId: string, start: number, end: number): string => {
+      const id = genZoomClipId();
+      setProject((p) => {
+        if (!p) return p;
+        return {
+          ...p,
+          scenes: p.scenes.map((s) => {
+            if (s.id !== sceneId) return s;
+            // Clamp range to the scene and drop any clips we'd overlap
+            // — simpler than prompting the user to resolve conflicts.
+            const cs = Math.max(s.start, Math.min(s.end, start));
+            const ce = Math.max(cs + 1, Math.min(s.end, end));
+            const clip: ZoomClip = {
+              id,
+              start: cs,
+              end: ce,
+              zoom: DEFAULT_ZOOM_CLIP_ZOOM,
+              followCursor: !!p.cursorTrack,
+              offsetX: 0,
+              offsetY: 0,
+            };
+            const kept = s.zoomClips.filter(
+              (c) => c.end <= cs || c.start >= ce,
+            );
+            return { ...s, zoomClips: [...kept, clip] };
+          }),
+        };
+      });
+      return id;
+    },
+    [],
+  );
+
+  const updateZoomClip = useCallback(
+    (sceneId: string, clipId: string, patch: Partial<ZoomClip>) => {
+      setProject((p) => {
+        if (!p) return p;
+        return {
+          ...p,
+          scenes: p.scenes.map((s) => {
+            if (s.id !== sceneId) return s;
+            return {
+              ...s,
+              zoomClips: s.zoomClips.map((c) =>
+                c.id === clipId ? { ...c, ...patch } : c,
+              ),
+            };
+          }),
+        };
+      });
+    },
+    [],
+  );
+
+  const removeZoomClip = useCallback(
+    (sceneId: string, clipId: string) => {
+      setProject((p) => {
+        if (!p) return p;
+        return {
+          ...p,
+          scenes: p.scenes.map((s) =>
+            s.id === sceneId
+              ? { ...s, zoomClips: s.zoomClips.filter((c) => c.id !== clipId) }
+              : s,
+          ),
+        };
+      });
+    },
+    [],
+  );
+
   return {
     project,
     setProject,
@@ -198,6 +297,10 @@ export function useEditorState(initial: EditorProject | null) {
     resetSceneTransform,
     splitAt,
     deleteScene,
+    setShowCursorOverlay,
+    addZoomClip,
+    updateZoomClip,
+    removeZoomClip,
   };
 }
 

@@ -294,6 +294,7 @@ export function EditorView({ projectId, onExit }: Props) {
         <Inspector
           project={editor.project}
           scene={inspectorScene ?? null}
+          playheadMs={playback.playheadMs}
           onLayoutChange={(l) => inspectorScene && editor.setSceneLayout(inspectorScene.id, l)}
           onAudioSourceChange={(a) =>
             inspectorScene && editor.setSceneAudioSource(inspectorScene.id, a)
@@ -311,6 +312,16 @@ export function EditorView({ projectId, onExit }: Props) {
           onTransformReset={(role) =>
             inspectorScene && editor.resetSceneTransform(inspectorScene.id, role)
           }
+          onShowCursorOverlayChange={editor.setShowCursorOverlay}
+          onAddZoomClip={(start, end) => {
+            if (inspectorScene) editor.addZoomClip(inspectorScene.id, start, end);
+          }}
+          onUpdateZoomClip={(clipId, patch) => {
+            if (inspectorScene) editor.updateZoomClip(inspectorScene.id, clipId, patch);
+          }}
+          onRemoveZoomClip={(clipId) => {
+            if (inspectorScene) editor.removeZoomClip(inspectorScene.id, clipId);
+          }}
         />
       </div>
 
@@ -445,11 +456,13 @@ function buildProject(loaded: {
         audioSource: audio,
         screenTransform,
         camTransform: { ...DEFAULT_CAM_TRANSFORM },
+        zoomClips: [],
       },
     ],
     sessionStartMs,
     totalDurationMs,
     cursorTrack: loaded.cursorTrack,
+    showCursorOverlay: false,
   };
 }
 
@@ -469,7 +482,7 @@ function initialScreenTransform(
   // portrait-canvas, which is what we optimize for.
   if (!screen) return { ...DEFAULT_TRANSFORM };
   // Portrait canvas + the common landscape screen recording → cover.
-  if (canvasAr < 1) return { fit: 'cover', zoom: 1, offsetX: 0, offsetY: 0, followCursor: false };
+  if (canvasAr < 1) return { fit: 'cover', zoom: 1, offsetX: 0, offsetY: 0 };
   return { ...DEFAULT_TRANSFORM };
 }
 

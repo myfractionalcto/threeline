@@ -184,6 +184,14 @@ function SceneBlock({
   widthPct: number;
   onClick: (e: React.MouseEvent) => void;
 }) {
+  // Local helper: map clip time (absolute project ms) to a percentage
+  // inside the scene block's own width, so the zoom-clip markers nest
+  // correctly no matter how the scene is placed on the timeline.
+  const sceneDur = Math.max(1, scene.end - scene.start);
+  const clipStyle = (startMs: number, endMs: number) => ({
+    left: `${((startMs - scene.start) / sceneDur) * 100}%`,
+    width: `${((endMs - startMs) / sceneDur) * 100}%`,
+  });
   return (
     <button
       type="button"
@@ -202,6 +210,16 @@ function SceneBlock({
         #{index + 1}
       </span>
       <span className="text-xs font-medium truncate">{layoutLabel(scene.layout)}</span>
+      {/* Zoom-clip markers — a small green strip inside the scene. Full
+          drag/resize UX lands in Phase 2 of the timeline redesign. */}
+      {scene.zoomClips.map((c) => (
+        <div
+          key={c.id}
+          className="absolute top-0 h-1.5 rounded-b-sm bg-emerald-500/80"
+          style={clipStyle(c.start, c.end)}
+          title={`Zoom ${c.zoom.toFixed(2)}×${c.followCursor ? ' · follow' : ''}`}
+        />
+      ))}
     </button>
   );
 }
