@@ -222,7 +222,11 @@ export interface Platform {
    * Electron polls at ~30 Hz and writes cursor.jsonl into the project folder.
    * Web is a no-op — browsers can't see the cursor outside the tab.
    */
-  startCursorTracking(projectId: string, startedAtMs: number): Promise<string | null>;
+  startCursorTracking(
+    projectId: string,
+    startedAtMs: number,
+    screenSourceId: string | null,
+  ): Promise<string | null>;
 
   /** Flush and close cursor.jsonl. Returns the filename (relative) or null. */
   stopCursorTracking(projectId: string): Promise<string | null>;

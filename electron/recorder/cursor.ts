@@ -23,10 +23,25 @@ interface Tracker {
 
 const trackers = new Map<string, Tracker>();
 
+/**
+ * Parse the display id out of a desktopCapturer source id. On every
+ * platform Electron exposes, screen sources are `screen:<displayId>:<windowIndex>`
+ * where `<displayId>` matches Electron's `Display.id` (an integer).
+ * Returns null if the caller didn't provide one or the format doesn't parse.
+ */
+function displayIdFromSource(sourceId: string | null): number | null {
+  if (!sourceId) return null;
+  const m = /^screen:(\d+):/.exec(sourceId);
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isFinite(id) ? id : null;
+}
+
 export async function startCursorTracking(
   projectId: string,
   projectDir: string,
   startedAtMs: number,
+  screenSourceId: string | null,
 ): Promise<string> {
   // If already tracking (reentrant call), stop the old one cleanly.
   if (trackers.has(projectId)) {
@@ -35,12 +50,22 @@ export async function startCursorTracking(
   const file = path.join(projectDir, 'cursor.jsonl');
   const stream = fs.createWriteStream(file, { flags: 'w' });
 
-  const display = screen.getPrimaryDisplay();
+  // Pick the display that's actually being recorded. Falling back to the
+  // primary display is wrong on multi-monitor setups — cursor samples are
+  // in GLOBAL screen coordinates, so we need the recorded display's origin
+  // (bounds.x/y) to make samples display-local, and we need to skip
+  // samples that aren't on that display at all.
+  const wantedId = displayIdFromSource(screenSourceId);
+  const display =
+    (wantedId != null
+      ? screen.getAllDisplays().find((d) => d.id === wantedId)
+      : undefined) ?? screen.getPrimaryDisplay();
+
   const header =
     JSON.stringify({
       kind: 'header',
       display: {
-        bounds: display.bounds, // in DIP
+        bounds: display.bounds, // in DIP — includes x/y offset in multi-display setups
         size: display.size,
         scaleFactor: display.scaleFactor,
       },
@@ -49,9 +74,20 @@ export async function startCursorTracking(
     }) + '\n';
   stream.write(header);
 
+  const bx = display.bounds.x;
+  const by = display.bounds.y;
+  const bw = display.bounds.width;
+  const bh = display.bounds.height;
+
   const timer = setInterval(() => {
     const p = screen.getCursorScreenPoint();
-    const line = JSON.stringify({ t: Date.now() - startedAtMs, x: p.x, y: p.y }) + '\n';
+    // Make samples relative to the recorded display's origin. Skip when
+    // the cursor is on another monitor — drawing a follow-target for a
+    // point that isn't on the recorded screen would be meaningless.
+    const x = p.x - bx;
+    const y = p.y - by;
+    if (x < 0 || y < 0 || x > bw || y > bh) return;
+    const line = JSON.stringify({ t: Date.now() - startedAtMs, x, y }) + '\n';
     stream.write(line);
   }, Math.round(1000 / POLL_HZ));
 

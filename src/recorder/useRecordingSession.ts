@@ -26,6 +26,9 @@ interface TrackRuntime {
 
 interface StartOptions {
   screenStream: MediaStream | null;
+  /** desktopCapturer source id for the chosen screen — needed so the
+   *  cursor tracker picks the right display on multi-monitor setups. */
+  screenSourceId: string | null;
   camStream: MediaStream | null;
   micStream: MediaStream | null;
 }
@@ -132,7 +135,7 @@ export function useRecordingSession(opts: UseRecordingSessionOptions = {}) {
   );
 
   const start = useCallback(
-    async ({ screenStream, camStream, micStream }: StartOptions) => {
+    async ({ screenStream, screenSourceId, camStream, micStream }: StartOptions) => {
       setError(null);
       setState('preparing');
       try {
@@ -176,7 +179,7 @@ export function useRecordingSession(opts: UseRecordingSessionOptions = {}) {
         // Kick off cursor tracking in parallel. No-op on web.
         if (screenStream) {
           platform
-            .startCursorTracking(handle.id, startAt)
+            .startCursorTracking(handle.id, startAt, screenSourceId)
             .catch((e) => console.warn('cursor tracking failed to start', e));
         }
 

@@ -42,6 +42,7 @@ declare global {
         startCursorTracking: (
           projectId: string,
           startedAtMs: number,
+          screenSourceId: string | null,
         ) => Promise<string | null>;
         stopCursorTracking: (projectId: string) => Promise<string | null>;
       };
@@ -116,8 +117,12 @@ export const electronPlatform: Platform = {
     return bridge().recorder.finalizeProject(projectId, manifest);
   },
 
-  startCursorTracking(projectId, startedAtMs) {
-    return bridge().recorder.startCursorTracking(projectId, startedAtMs);
+  startCursorTracking(projectId, startedAtMs, screenSourceId) {
+    return bridge().recorder.startCursorTracking(
+      projectId,
+      startedAtMs,
+      screenSourceId,
+    );
   },
 
   stopCursorTracking(projectId) {
