@@ -89,17 +89,40 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checkout needed so we can read CHANGELOG.md for the release body.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          # Pull out the topmost "## [x.y.z]" section of CHANGELOG.md as
+          # the release body. Keep-a-Changelog ordering means "topmost"
+          # is always the latest entry — so cutting a release is just
+          # "prepend a new ## [x.y.z] section, bump package.json, tag."
+          awk '
+            /^## \[/ { count++; if (count == 2) exit }
+            count == 1 { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG section found — falling back to auto-generated notes." >&2
+            # Empty file is fine — softprops falls back to generate_release_notes.
+          fi
 
       - name: Create draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           # Flatten each platform's artifact directory into the release.
           files: artifacts/**/*
-          # Let GitHub auto-compose changelog from merged PRs since the
-          # previous tag. We can edit it before publishing.
+          # Prefer the hand-written CHANGELOG entry as the release body;
+          # fall back to GitHub's auto-composed PR-list changelog if the
+          # file is empty (e.g. someone forgot to update CHANGELOG.md
+          # before tagging).
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
           # DRAFT: reviewer has to click "Publish" after sanity-checking
           # that each installer boots. Avoids accidental public releases

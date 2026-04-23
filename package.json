@@ -1,6 +1,6 @@
 {
   "name": "threelane",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Threelane — local screen + multi-cam recorder and reels/shorts editor",
   "main": "dist-electron/main.js",
