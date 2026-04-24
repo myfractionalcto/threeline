@@ -5,6 +5,18 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). When
 cutting a release, the release workflow picks the topmost `## [x.y.z]`
 section and uses it verbatim as the GitHub Release body.
 
+## [Unreleased]
+
+### Distribution
+
+- **Linux AppImage (x64)** added to the release matrix. Single-file
+  portable binary — `chmod +x Threelane-<version>.AppImage` and run.
+  No code signing on Linux (not a convention). On Wayland sessions
+  (Ubuntu 22+, Fedora 36+) screen capture goes through
+  xdg-desktop-portal, so users see a "pick a screen" prompt once per
+  session; X11 sessions capture silently. Cursor tracking works on
+  both.
+
 ## [0.2.0] - 2026-04-23
 
 First cross-platform release. macOS (arm64 + x64) and Windows (x64)

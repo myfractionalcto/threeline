@@ -64,3 +64,18 @@ nsis:
   # Leave a Start-menu shortcut so Threelane is findable post-install.
   createStartMenuShortcut: true
   createDesktopShortcut: true
+# Linux target. AppImage is the most portable — single file, no install,
+# runs on any modern distro. x64 only; arm64 Linux desktops are rare and
+# ffmpeg-static doesn't ship a linux-arm64 binary that we've verified.
+#
+# Screen capture on Wayland sessions goes through xdg-desktop-portal
+# (PipeWire), so users see a "pick a screen" portal dialog once per
+# session. X11 sessions capture silently. Cursor tracking uses
+# Electron's screen.getCursorScreenPoint() which works on both.
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: AudioVideo
+  synopsis: Local screen + multi-cam recorder and reels/shorts editor

@@ -10,12 +10,15 @@
 # on demand without tagging. That path skips the release-creation step;
 # installers are available as downloadable artifacts on the run page.
 #
-# No code signing yet on either platform:
+# No code signing yet on any platform:
 #   - macOS: ad-hoc signed (identity: '-' in electron-builder.yml).
 #     Users need to right-click → Open the first time, but TCC remembers
 #     camera/mic consent thanks to the stable ad-hoc identity.
 #   - Windows: unsigned. SmartScreen shows "Unrecognized app" until the
 #     first few hundred installs build reputation, or we buy an EV cert.
+#   - Linux: AppImage, no signing convention — users `chmod +x` and run.
+#     On Wayland sessions (modern Ubuntu/Fedora) screen capture prompts
+#     via xdg-desktop-portal once per session; X11 captures silently.
 name: Release
 
 on:
@@ -37,6 +40,8 @@ jobs:
             platform: mac
           - os: windows-latest
             platform: win
+          - os: ubuntu-latest
+            platform: linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +81,7 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+            release/*.AppImage
             release/*.yml
             release/*.blockmap
           if-no-files-found: error
