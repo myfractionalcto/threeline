@@ -193,46 +193,72 @@ function cursorAtMs(
 }
 
 /**
- * Sampling rate for follow-cursor segmentation. Each sample becomes one
- * ffmpeg segment with a constant offset. 5 Hz keeps the filter graph
- * manageable (≤150 segments for a 30 s scene) while still reading as
- * continuous panning at export time — below that the cursor visibly
- * jumps in blocks.
+ * Cursor sampling interval for follow-cursor, in ms. Each tick emits
+ * one (offsetX, offsetY) waypoint that drives the block's overlay
+ * position via `sendcmd` at export time.
+ *
+ * Must match the output frame interval (1000/fps) or finer. `sendcmd`
+ * applies each command instantly and holds the new x/y until the next
+ * command fires — so at a sampling interval of 200 ms and an output
+ * rate of 30 fps, 6 consecutive frames render at the same overlay
+ * position before snapping to the next sample. In zoom-clip regions
+ * the zoom factor amplifies the visible step, making the panning look
+ * chunky. Sampling once per output frame (≈33 ms at 30 fps) gives
+ * every frame its own position and the motion reads as continuous.
+ *
+ * Prior to v0.2.1 each sample became its own split+trim+scale+overlay
+ * sub-chain, so a 230 s follow scene built 1149 segments × 5 filters
+ * plus a 1149-way split; ffmpeg's filter allocator died mid-graph with
+ * "Failed to configure output pad on Parsed_scale_N / Error
+ * reinitializing filters". The current block-level graph keeps filter
+ * count linear in the number of zoom clips (typically ≤10), not in
+ * sample count — sample count only grows the `sendcmd` command
+ * string, which scales cheaply: a 230 s scene at 33 ms produces ~7k
+ * commands totalling ~500 KB of argv, well under the 1 MB macOS
+ * ARG_MAX limit.
  */
-const FOLLOW_SAMPLE_MS = 200;
+const FOLLOW_SAMPLE_MS = 33;
 
 /** Temporal smoothing factor — matches the preview's 0.25 exponential
  *  smoothing so previewed and exported follow paths look the same. */
 const FOLLOW_SMOOTH_ALPHA = 0.25;
 
 /**
- * One piece of the scene's screen stream with a constant transform. Times
- * are scene-relative (ms from scene.start).
+ * One contiguous run of the scene's screen stream with a constant
+ * (zoom, fit, base) transform. If `followSamples` is populated, the
+ * overlay position pans between those waypoints during the block; if
+ * null, the block uses `base.offsetX`/`base.offsetY` statically.
+ *
+ * Times are scene-relative (ms from scene.start). Sample `tMs` values
+ * inside `followSamples` are also scene-relative and always fall within
+ * [startMs, endMs).
  */
-interface ScreenSegment {
+interface ScreenBlock {
   startMs: number;
   endMs: number;
-  transform: ExportSourceTransform;
+  base: ExportSourceTransform;
+  followSamples: { tMs: number; offsetX: number; offsetY: number }[] | null;
 }
 
 /**
- * Break a scene up into screen-transform segments honoring zoom clips and
+ * Break a scene up into screen-transform blocks honoring zoom clips and
  * cursor-follow. Algorithm:
  *
  *   1. Walk the scene's timeline inserting zoom-clip boundaries as cuts
- *      (everything outside clips uses scene.screenTransform).
- *   2. For each resulting block, if follow-cursor is on and we have
- *      cursor samples, sub-sample the block at FOLLOW_SAMPLE_MS ticks
- *      and emit one segment per tick with the computed offset. Otherwise
- *      emit a single block with the block's static transform.
+ *      (everything outside clips uses scene.screenTransform). Each
+ *      resulting block carries a single (zoom, fit, base-offset) — only
+ *      offsetX/offsetY can vary within the block, via follow-cursor.
+ *   2. For follow blocks with cursor data, attach a `followSamples`
+ *      array sampled at FOLLOW_SAMPLE_MS with the same exponential
+ *      smoothing the preview uses (α = FOLLOW_SMOOTH_ALPHA).
  *
- * The preview reads the video element's natural size for source dims; we
- * don't have that at export time without an ffprobe pass. Assume the
- * cursor track's display.width/height are a good proxy — screens recorded
- * via desktopCapturer match the display's backing resolution up to
- * rounding.
+ * The preview reads the video element's natural size for source dims;
+ * we don't have that at export time without an ffprobe pass. Assume the
+ * cursor track's display.width/height are a good proxy — screens
+ * recorded via desktopCapturer match the display's backing resolution
+ * up to rounding.
  */
-function planScreenSegments(
+function planScreenBlocks(
   scene: ExportRequest['scenes'][number],
   canvas: { width: number; height: number },
   cursorTrack: ExportRequest['cursorTrack'] | undefined,
@@ -242,7 +268,7 @@ function planScreenSegments(
    *  per layout, so the caller supplies it. */
   targetW: number,
   targetH: number,
-): ScreenSegment[] {
+): ScreenBlock[] {
   const durMs = scene.end - scene.start;
   const clipsSorted = [...scene.zoomClips].sort((a, b) => a.start - b.start);
 
@@ -291,28 +317,28 @@ function planScreenSegments(
     });
   }
 
-  // Expand each block into segments. Static blocks collapse to one
-  // segment. Follow blocks are sampled at FOLLOW_SAMPLE_MS.
-  const segments: ScreenSegment[] = [];
+  // Attach cursor samples to follow blocks. Samples are scene-relative
+  // and reuse the preview's exponential smoothing so preview and export
+  // pan identically.
+  const out: ScreenBlock[] = [];
   const srcDim = cursorTrack?.display ?? { width: canvas.width, height: canvas.height };
   for (const block of blocks) {
     const wantsFollow =
       block.follow && cursorTrack && cursorTrack.samples.length > 0;
     if (!wantsFollow) {
-      segments.push({
+      out.push({
         startMs: block.startMs,
         endMs: block.endMs,
-        transform: { ...block.base },
+        base: { ...block.base },
+        followSamples: null,
       });
       continue;
     }
-    // Sample cursor at regular intervals and emit micro-segments. Smooth
-    // across samples the same way the preview does.
+    const samples: { tMs: number; offsetX: number; offsetY: number }[] = [];
     let smoothedX = 0;
     let smoothedY = 0;
     let seeded = false;
     for (let t = block.startMs; t < block.endMs; t += FOLLOW_SAMPLE_MS) {
-      const segEnd = Math.min(block.endMs, t + FOLLOW_SAMPLE_MS);
       // Map scene-relative → screen-track local time for cursor lookup.
       const trackMs = scene.start + t - screenOffsetMs;
       const raw = cursorAtMs(cursorTrack.samples, trackMs);
@@ -336,66 +362,167 @@ function planScreenSegments(
         offsetX = smoothedX;
         offsetY = smoothedY;
       }
-      segments.push({
-        startMs: t,
-        endMs: segEnd,
-        transform: { ...block.base, offsetX, offsetY },
-      });
+      samples.push({ tMs: t, offsetX, offsetY });
     }
+    out.push({
+      startMs: block.startMs,
+      endMs: block.endMs,
+      base: { ...block.base },
+      // Samples might be empty if a follow block happens to be shorter
+      // than one sample tick and the cursor lookup returned null — treat
+      // that as "static" so the block doesn't pay the sendcmd overhead
+      // for no benefit.
+      followSamples: samples.length > 0 ? samples : null,
+    });
   }
-
-  // Paranoia — the concat filter hates empty segments. Drop anything
-  // that rounded down to zero duration (sub-1 ms fence-posts from the
-  // block boundaries).
-  return segments.filter((s) => s.endMs - s.startMs >= 1);
+  return out;
 }
 
 /**
- * Build a filter-graph fragment that produces a single segmented
- * `[screenOut]` stream at (targetW, targetH), derived from the screen
- * input at `screenIdx`. Uses `split` + per-segment `trim` + transform +
- * `concat` — one decode pass, many output frames.
+ * Build a filter-graph fragment that produces a single concatenated
+ * `[screenOut]` stream at (targetW, targetH), one block-sized piece
+ * per `ScreenBlock`. Uses `split` (N-way, where N = # blocks, not
+ * # cursor samples) + per-block trim/scale/overlay + `concat`.
  *
- * Returns null if segmentation would produce zero segments (empty scene).
+ * Follow blocks keep a single scale + single overlay for the whole
+ * block duration; the overlay's `x`/`y` options are updated at each
+ * cursor sample via a `sendcmd` chained in front of the overlay. This
+ * keeps the filter count linear in the number of zoom clips (typically
+ * ≤10 per scene), not in the number of cursor samples (hundreds to
+ * thousands), which avoids the filter-graph allocator blow-up we hit
+ * at v0.2.0 on long follow-cursor scenes.
+ *
+ * Returns null if there are no blocks (empty scene).
  */
-function screenSegmentsGraph(
-  segments: ScreenSegment[],
+function screenBlocksGraph(
+  blocks: ScreenBlock[],
   screenIdx: number,
   targetW: number,
   targetH: number,
   suffix: string,
 ): { chain: string; outLabel: string } | null {
-  if (segments.length === 0) return null;
-  const n = segments.length;
+  if (blocks.length === 0) return null;
+  const n = blocks.length;
   const splitLabels = Array.from({ length: n }, (_, i) => `sp${suffix}${i}`);
-  const splitChain = `[${screenIdx}:v]split=${n}${splitLabels
-    .map((l) => `[${l}]`)
-    .join('')}`;
-  const segChains: string[] = [];
-  const segOuts: string[] = [];
+  // Normalize the screen input to CFR before splitting. macOS
+  // ScreenCaptureKit (and Windows equivalents) record VFR — frames are
+  // only emitted when pixels change. Forcing 30 fps here guarantees
+  // every trim window downstream has frames to work with, even across
+  // idle periods. 30 fps matches the Reels/Shorts delivery target.
+  // format=yuv420p and setsar=1 pin the pixel format and sample aspect
+  // ratio so scale's output-pad negotiation doesn't trip on mid-stream
+  // drift (e.g. macOS VideoToolbox occasionally alternates nv12/yuv420p).
+  const cfrLabel = `cfr_${suffix}`;
+  const cfrChain = `[${screenIdx}:v]fps=30,format=yuv420p,setsar=1[${cfrLabel}]`;
+  const splitChain =
+    n === 1
+      ? `[${cfrLabel}]null[${splitLabels[0]}]`
+      : `[${cfrLabel}]split=${n}${splitLabels.map((l) => `[${l}]`).join('')}`;
+
+  const blockChains: string[] = [];
+  const blockOuts: string[] = [];
   for (let i = 0; i < n; i++) {
-    const seg = segments[i];
+    const b = blocks[i];
+    const durSec = (b.endMs - b.startMs) / 1000;
+    const startSec = b.startMs / 1000;
     const trimLabel = `trm${suffix}${i}`;
-    const dur = (seg.endMs - seg.startMs) / 1000;
-    const startSec = seg.startMs / 1000;
-    segChains.push(
+    const scaleLabel = `sc${suffix}${i}`;
+    const bgLabel = `bg${suffix}${i}`;
+    const frLabel = `fr${suffix}${i}`;
+
+    // Trim + PTS reset — one trim per block, not per sample.
+    blockChains.push(
       `[${splitLabels[i]}]trim=start=${startSec.toFixed(3)}:` +
-        `duration=${dur.toFixed(3)},setpts=PTS-STARTPTS[${trimLabel}]`,
+        `duration=${durSec.toFixed(3)},setpts=PTS-STARTPTS[${trimLabel}]`,
     );
-    const { chain: tchain, outLabel } = transformedSource(
-      trimLabel,
-      targetW,
-      targetH,
-      seg.transform,
-      dur,
-      `${suffix}${i}`,
-    );
-    segChains.push(tchain);
-    segOuts.push(outLabel);
+
+    // Scale the trimmed stream once at the block's (constant) zoom.
+    const fitFlag =
+      b.base.fit === 'cover'
+        ? 'force_original_aspect_ratio=increase'
+        : 'force_original_aspect_ratio=decrease';
+    const zoom = Math.max(0.1, b.base.zoom);
+    const zW = Math.max(1, Math.round(targetW * zoom));
+    const zH = Math.max(1, Math.round(targetH * zoom));
+
+    // Build the overlay position expression. For static blocks this is
+    // a constant. For follow blocks, the initial value is the first
+    // sample's position and subsequent samples update x/y via sendcmd.
+    const xFromOffset = (offX: number) =>
+      `(${targetW}-w)/2+(${offX.toFixed(4)})*${targetW}`;
+    const yFromOffset = (offY: number) =>
+      `(${targetH}-h)/2+(${offY.toFixed(4)})*${targetH}`;
+
+    if (b.followSamples && b.followSamples.length > 0) {
+      // Re-base sample times to block-local seconds. sendcmd timestamps
+      // are stream-time from the start of the filter's input, and after
+      // setpts=PTS-STARTPTS that's 0 at the trim's first frame.
+      const samples = b.followSamples;
+      const baseMs = b.startMs;
+      // Each sample emits one sendcmd interval combining x and y. The
+      // sendcmd grammar is `INTERVAL CMD[,CMD,...]` with intervals
+      // separated by `;`. Command args are plain numeric expressions
+      // (no spaces, no semicolons), so no escaping is needed.
+      const cmdParts: string[] = [];
+      for (const s of samples) {
+        const tSec = Math.max(0, (s.tMs - baseMs) / 1000).toFixed(3);
+        cmdParts.push(
+          `${tSec} overlay x ${xFromOffset(s.offsetX)},` +
+            `overlay y ${yFromOffset(s.offsetY)}`,
+        );
+      }
+      const cmdStr = cmdParts.join(';');
+      // Plain background — no sendcmd here.
+      blockChains.push(
+        `color=c=black:s=${targetW}x${targetH}:d=${durSec.toFixed(3)}[${bgLabel}]`,
+      );
+      // sendcmd rides on the SCALED VIDEO stream, not the background.
+      // The CFR chain pins the video to 30 fps; the color source defaults
+      // to 25 fps. sendcmd commands fire when frames pass through it, so
+      // putting it on the slower stream means commands fire at 25 Hz —
+      // and at our 33 ms sample interval, more commands queue up than
+      // frames can flush over the scene's runtime. The result is the
+      // overlay's x/y getting permanently stuck a few hundred samples
+      // behind. Riding the 30 fps video stream gives us one command per
+      // output frame, exactly what we want for smooth panning.
+      blockChains.push(
+        `[${trimLabel}]scale=${zW}:${zH}:${fitFlag},` +
+          `sendcmd=c='${cmdStr}'[${scaleLabel}]`,
+      );
+      // eval=frame lets the overlay re-compile x/y every frame so
+      // sendcmd updates take effect. The initial x/y is the first
+      // sample's position so frames before the first sendcmd tick are
+      // already correctly placed.
+      const first = samples[0];
+      blockChains.push(
+        `[${bgLabel}][${scaleLabel}]overlay=eval=frame:` +
+          `x=${xFromOffset(first.offsetX)}:` +
+          `y=${yFromOffset(first.offsetY)}[${frLabel}]`,
+      );
+    } else {
+      // Static block — plain scale + plain overlay, no sendcmd.
+      blockChains.push(
+        `[${trimLabel}]scale=${zW}:${zH}:${fitFlag}[${scaleLabel}]`,
+      );
+      blockChains.push(
+        `color=c=black:s=${targetW}x${targetH}:d=${durSec.toFixed(3)}[${bgLabel}]`,
+      );
+      blockChains.push(
+        `[${bgLabel}][${scaleLabel}]overlay=` +
+          `x=${xFromOffset(b.base.offsetX)}:` +
+          `y=${yFromOffset(b.base.offsetY)}[${frLabel}]`,
+      );
+    }
+
+    blockOuts.push(`[${frLabel}]`);
   }
+
   const outLabel = `segout_${suffix}`;
-  const concatChain = `${segOuts.join('')}concat=n=${n}:v=1:a=0[${outLabel}]`;
-  const chain = [splitChain, ...segChains, concatChain].join(';');
+  const concatChain =
+    n === 1
+      ? `${blockOuts[0]}null[${outLabel}]`
+      : `${blockOuts.join('')}concat=n=${n}:v=1:a=0[${outLabel}]`;
+  const chain = [cfrChain, splitChain, ...blockChains, concatChain].join(';');
   return { chain, outLabel: `[${outLabel}]` };
 }
 
@@ -419,7 +546,20 @@ function run(args: string[], logTag: string): Promise<void> {
     p.on('error', reject);
     p.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg ${logTag} failed (code ${code}): ${stderr.slice(-400)}`));
+      else {
+        // Log the full command + full stderr so we can reproduce the
+        // exact ffmpeg invocation outside Electron when a filter-graph
+        // negotiation fails. The thrown Error still trims to the last
+        // 400 chars for the UI toast.
+        // eslint-disable-next-line no-console
+        console.error(
+          `[export] ffmpeg ${logTag} failed (code ${code})\n` +
+            `  bin: ${ffmpegBinary()}\n` +
+            `  args: ${JSON.stringify(args)}\n` +
+            `  stderr:\n${stderr}`,
+        );
+        reject(new Error(`ffmpeg ${logTag} failed (code ${code}): ${stderr.slice(-400)}`));
+      }
     });
   });
 }
@@ -471,7 +611,7 @@ function sceneFilterGraph(
         suffix,
       );
     }
-    const segments = planScreenSegments(
+    const blocks = planScreenBlocks(
       scene,
       { width: canvasW, height: canvasH },
       cursorTrack,
@@ -480,7 +620,7 @@ function sceneFilterGraph(
       targetH,
     );
     return (
-      screenSegmentsGraph(segments, screenIdx, targetW, targetH, suffix) ??
+      screenBlocksGraph(blocks, screenIdx, targetW, targetH, suffix) ??
       transformedSource(
         `${screenIdx}:v`,
         targetW,
@@ -541,11 +681,40 @@ function sceneFilterGraph(
       durSec,
       'cam',
     );
-    // Note: bubble is square here (not circular) for v1 — ffmpeg circular
-    // masks need a geq alpha pass which we'll add later.
+    // Circular bubble. Build a separate grayscale mask (white inside the
+    // inscribed circle, black outside) via geq on a solid color source,
+    // then alphamerge it onto the bubble composite. This is more robust
+    // than feeding geq a yuva420p input and overriding only alpha —
+    // ffmpeg's option parser has surprising behavior around quoted
+    // expressions, and geq always needs one of lum/cb/cr/r/g/b set
+    // anyway. alphamerge takes input #2's luma as input #1's alpha.
+    // Final overlay uses format=auto so the transparent corners let
+    // the screen layer show through, matching the editor's circular
+    // preview. libx264 flattens the alpha at encode time via -pix_fmt.
+    const maskChain =
+      `color=c=black:s=${bubble}x${bubble}:d=${durSec.toFixed(3)},` +
+      `geq=lum='if(lte(hypot(X-W/2,Y-H/2),W/2),255,0)'[circle_mask];` +
+      `${c.outLabel}[circle_mask]alphamerge[cam_circle]`;
+    // White ring around the bubble, matching the preview's
+    // rgba(255,255,255,0.9) + lineWidth = max(2, bubble*0.02) stroke.
+    // Canvas strokes are centered on the path (half inside, half
+    // outside the radius). We place the ring fully inside the bubble
+    // box (band: r ∈ [W/2 - LW, W/2]) so we don't need to enlarge the
+    // overlay rect — within 1 px of preview for realistic bubble sizes.
+    // Alpha ≈ 230 = 255 * 0.9 to match the 90% opacity.
+    const lineWidth = Math.max(2, Math.round(bubble * 0.02));
+    const innerR = bubble / 2 - lineWidth;
+    const outerR = bubble / 2;
+    const ringAlpha = 230;
+    const ringChain =
+      `color=c=black:s=${bubble}x${bubble}:d=${durSec.toFixed(3)},` +
+      `geq=lum='if(between(hypot(X-W/2,Y-H/2),${innerR.toFixed(1)},${outerR.toFixed(1)}),${ringAlpha},0)'[ring_mask];` +
+      `color=c=white:s=${bubble}x${bubble}:d=${durSec.toFixed(3)}[ring_src];` +
+      `[ring_src][ring_mask]alphamerge[ring];` +
+      `[cam_circle][ring]overlay=0:0:format=auto[bubble_final]`;
     return (
-      `${s.chain};${c.chain};` +
-      `${s.outLabel}${c.outLabel}overlay=${x}:${y}[outv]`
+      `${s.chain};${c.chain};${maskChain};${ringChain};` +
+      `${s.outLabel}[bubble_final]overlay=${x}:${y}:format=auto[outv]`
     );
   }
   // Fallback — solid black.
