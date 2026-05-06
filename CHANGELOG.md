@@ -5,7 +5,31 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). When
 cutting a release, the release workflow picks the topmost `## [x.y.z]`
 section and uses it verbatim as the GitHub Release body.
 
-## [Unreleased]
+## [0.2.1] - 2026-04-25
+
+Linux support lands alongside two export-path fixes caught while
+smoke-testing v0.2.0.
+
+### Editor
+
+- **Fixed export crash on scenes with cursor-follow enabled.** The
+  v0.2.0 exporter sub-sampled each follow block at 200 ms ticks and
+  built one `split`+`trim`+`scale`+`overlay` sub-chain per sample —
+  long follow scenes blew that out to 5000+ filters plus a
+  thousand-way `split`, exhausting ffmpeg's filter-graph allocator
+  mid-render with `Failed to configure output pad on Parsed_scale_N
+  / Error reinitializing filters / Resource temporarily unavailable`.
+  Replaced the per-sample fanout with one `scale` + one `overlay`
+  per zoom-clip block; cursor waypoints now drive the overlay's x/y
+  via an in-chain `sendcmd`, riding the 30 fps scaled-video stream so
+  commands fire at output frame rate. Filter count is now linear in
+  zoom clips (typically ≤10), not in sample count, and panning reads
+  smoother than v0.2.0 since every output frame gets its own position.
+- **Circular bubble in exported MP4.** The editor preview already
+  rendered the picture-in-picture bubble as a circle; the exporter
+  had been leaving it square. Now uses a `geq`-painted alpha mask so
+  exported videos match the preview, including the ~2 px white ring
+  border the preview draws.
 
 ### Distribution
 

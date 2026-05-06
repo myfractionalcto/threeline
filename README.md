@@ -18,13 +18,15 @@
 
 ---
 
-> **Status:** v0.1.0 — first public build. Records screen + webcam + mobile
-> companion over WiFi, edits in a timeline, and exports to MP4. Expect rough
-> edges; not code-signed yet.
+> **Status:** v0.2.1 — macOS, Windows, and Linux builds. Records screen +
+> webcam + mobile companion over WiFi, edits in a timeline with cursor-follow
+> + zoom clips + circular bubble, and exports to MP4. Expect rough edges; not
+> code-signed yet on any platform.
 
 ## About
 
-Threelane is a Mac app for making **product demos, tutorials, and tech reels**.
+Threelane is a desktop app (macOS, Windows, Linux) for making **product
+demos, tutorials, and tech reels**.
 It captures your screen, webcam, and phone-as-camera simultaneously over the
 same WiFi network, then edits the recording into portrait, landscape, or
 square video with per-scene layouts and exports straight to MP4.
@@ -40,6 +42,14 @@ demos, dev-rel engineers making tutorials, and anyone who's tired of screen
 recorders that want to live in the cloud.
 
 More on the [website](https://threelane.myfractionalcto.com).
+
+## Demo
+
+Watch a 40-second walkthrough on YouTube — recording screen + webcam +
+iPhone over WiFi, then editing with zoom clips, trim, and a circular
+bubble cam:
+
+[![Threelane demo on YouTube](docs/screenshots/studio.png)](https://www.youtube.com/watch?v=H2UTbe6Qdpg)
 
 ## Screenshots
 
@@ -111,14 +121,17 @@ bubble corner and zoom, then export straight to MP4.
 
 ## Install
 
-Grab the latest `.dmg` from the [Releases page](../../releases/latest):
+Grab the latest installer for your platform from the
+[Releases page](../../releases/latest):
 
-- **Apple Silicon (M1/M2/M3/M4)** → `Threelane-<version>-arm64.dmg`
-- **Intel Mac** → `Threelane-<version>.dmg`
+- **macOS — Apple Silicon (M1/M2/M3/M4)** → `Threelane-<version>-arm64.dmg`
+- **macOS — Intel** → `Threelane-<version>.dmg`
+- **Windows (x64)** → `Threelane-Setup-<version>.exe`
+- **Linux (x64)** → `Threelane-<version>.AppImage`
+
+### macOS
 
 Open the `.dmg` and drag **Threelane.app** to **Applications**.
-
-### If macOS blocks the app
 
 Threelane is not yet signed with an Apple Developer certificate, so macOS
 Gatekeeper may refuse to open it on first launch ("damaged" or "cannot
@@ -132,6 +145,30 @@ xattr -rd com.apple.quarantine /Applications/Threelane.app
 Then launch Threelane normally. Alternatively, right-click Threelane.app
 in Applications → **Open**, then click **Open** in the dialog
 (double-clicking won't show the override button).
+
+### Windows
+
+Run the `.exe` installer. The NSIS installer lets you pick the install
+directory and adds a Start-menu shortcut.
+
+The build is **unsigned** — SmartScreen will warn on first launch with
+"Windows protected your PC". Click **More info → Run anyway**. We'll
+swap this out for an EV code-signing cert when there's one on the
+project.
+
+### Linux
+
+The AppImage is a single-file portable binary — no install step. Mark it
+executable and run:
+
+```bash
+chmod +x Threelane-<version>.AppImage
+./Threelane-<version>.AppImage
+```
+
+On Wayland sessions (Ubuntu 22+, Fedora 36+) screen capture goes through
+xdg-desktop-portal, so you'll see a "pick a screen" prompt once per
+session. X11 sessions capture silently. Cursor tracking works on both.
 
 ## Community
 
@@ -147,14 +184,27 @@ npm install
 npm run dev      # starts Vite + Electron with hot reload
 ```
 
-## Build an unsigned .dmg
+## Build an unsigned installer
+
+Install dependencies once (`npm install`), then pick a target. Each
+command writes to `release/`:
 
 ```bash
-npm run dist     # writes release/Threelane-<version>-<arch>.dmg
+npm run dist:mac    # Threelane-<version>-arm64.dmg + Threelane-<version>.dmg
+npm run dist:win    # Threelane-Setup-<version>.exe (NSIS, x64)
+npm run dist        # builds for the current host platform — use this on Linux
+                    # to produce Threelane-<version>.AppImage (x64)
 ```
 
-We'll add real code signing when there's an Apple Developer account on
-the project — it's a flag-flip in `electron-builder.yml`.
+You can only build a given platform's installer on (or with a
+cross-build toolchain for) that platform — `dist:mac` needs macOS,
+`dist:win` runs cleanly on Windows or Linux, and the AppImage is built
+on Linux. CI does the matrix on every `v*` tag push via
+`.github/workflows/release.yml`.
+
+We'll add real code signing when there's an Apple Developer account
+(macOS) and an EV cert (Windows) on the project — both are flag-flips
+in `electron-builder.yml`. Linux AppImages aren't typically signed.
 
 ## Layout
 
